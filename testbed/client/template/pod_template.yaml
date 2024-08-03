@@ -1,0 +1,113 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ job_name }}
+  namespace: {{ namespace }}
+  labels:
+    testbed-id: {{ testbed_id }}
+    user-id: {{ user_id }}
+    instance-id: {{ instance_id }}
+spec:
+  template:
+    spec:
+      serviceAccountName: testbed-service-account
+      priorityClassName: {{ priority }}
+      containers:
+      - name: testbed
+        image: {{ testbed_image }}
+        imagePullPolicy: IfNotPresent
+        command: [ "/bin/sh" ]
+        args:
+          - -c
+          - |
+            echo "Starting testbed"
+            while true; do
+              if [ -f /shared/run_eval ]; then
+                rm /shared/run_eval
+                echo "Starting /shared/eval.sh"
+                /shared/eval.sh > /shared/test_output.txt 2>&1
+                touch /shared/eval_complete
+                echo "Finished /shared/eval.sh"
+              elif [ -f /shared/kill ]; then
+                echo "Kill command received. Exiting."
+                exit 0
+              fi
+              sleep 1
+            done
+        resources:
+          requests:
+            cpu: "{{ request_cpu }}"
+            memory: "{{ request_memory }}"
+          limits:
+            cpu: "{{ limit_cpu }}"
+            memory: "{{ limit_memory }}"
+        volumeMounts:
+        - name: shared-volume
+          mountPath: /shared
+        ports:
+        - containerPort: {{ zeromq_pubsub_port }}
+        - containerPort: {{ zeromq_req_port }}
+        env:
+        - name: ZEROMQ_PUBSUB_PORT
+          value: "{{ zeromq_pubsub_port }}"
+        - name: ZEROMQ_REQ_PORT
+          value: "{{ zeromq_req_port }}"
+      - name: sidecar
+        image: {{ sidecar_image }}
+        imagePullPolicy: Always
+        ports:
+        - containerPort: {{ zeromq_pubsub_port }}
+        - containerPort: {{ zeromq_req_port }}
+        #livenessProbe:
+        #  httpGet:
+        #    path: /health
+        #    port: 8000
+        #  initialDelaySeconds: 1
+        #  periodSeconds: 1
+        #readinessProbe:
+        #  httpGet:
+        #    path: /health
+        #    port: 8000
+        #  initialDelaySeconds: 1
+        #  periodSeconds: 1
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+        - name: shared-volume
+          mountPath: /shared
+        env:
+        - name: ZEROMQ_PUBSUB_PORT
+          value: "{{ zeromq_pubsub_port }}"
+        - name: ZEROMQ_REQ_PORT
+          value: "{{ zeromq_req_port }}"
+        - name: KUBE_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: USER_ID
+          value: "{{ user_id }}"
+        - name: INSTANCE_ID
+          value: "{{ instance_id }}"
+        - name: TESTBED_ID
+          value: "{{ testbed_id }}"
+        - name: CONFIG_FILE_PATH
+          value: "/etc/config/instance.json"
+        - name: AZURE_STORAGE_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: testbed-secrets
+              key: AZURE_STORAGE_CONNECTION_STRING
+      nodeSelector:
+        pool: testbeds
+      restartPolicy: OnFailure
+      volumes:
+      - name: shared-volume
+        emptyDir: {}
+      - name: config-volume
+        configMap:
+          name: {{ configmap_name }}
+  backoffLimit: 4
