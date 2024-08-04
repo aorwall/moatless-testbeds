@@ -4,6 +4,7 @@ import uuid
 import logging
 from testbed.sdk import TestbedSDK
 from dotenv import load_dotenv
+from kubernetes import client, config
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -15,7 +16,17 @@ load_dotenv()
 logger.info(f"Loaded environment variables from .env file")
 logger.info(f"KUBE_NAMESPACE: {os.getenv('KUBE_NAMESPACE')}")
 
-@pytest.mark.integration
+def is_correct_k8s_context():
+    try:
+        config.load_kube_config()
+        _, active_context = config.list_kube_config_contexts()
+        current_namespace = active_context['context']['namespace']
+        return current_namespace == os.getenv('KUBE_NAMESPACE')
+    except Exception as e:
+        logger.error(f"Error checking Kubernetes context: {e}")
+        return False
+
+@pytest.mark.skipif(not is_correct_k8s_context(), reason="Incorrect Kubernetes context or namespace")
 def test_full_integration():
     test_id = str(uuid.uuid4())[:8]
     logger.info(f"Starting integration test {test_id}")
@@ -23,12 +34,6 @@ def test_full_integration():
     instance_id = "sympy__sympy-21847"
 
     with TestbedSDK(instance_id, os.getenv("KUBE_NAMESPACE")) as sdk:
-        logger.info(f"Test {test_id}: Run health check on testbed")
-        assert sdk.check_health(
-            timeout=30
-        ), f"Test {test_id}: Health check on testbed failed"
-        logger.info(f"Test {test_id}: Health check successful")
-
         logger.info(f"Test {test_id}: Running evaluation")
         run_id = f"test_run_integration_{test_id}"
         patch = ""

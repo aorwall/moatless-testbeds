@@ -25,6 +25,12 @@ class TestbedSDK:
         self.testbed_id = response.testbed_id
         utils.wait_for_testbed_ready(self.manager, self.testbed_id)
         self.client = self.manager.create_client(self.testbed_id)
+        logger.info(f"Client created, running health check")
+        assert self.check_health(
+            timeout=120
+        ), f"Health check on testbed failed"
+        logger.info(f"Health check successful, client ready")
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):

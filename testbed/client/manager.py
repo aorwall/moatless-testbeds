@@ -185,21 +185,6 @@ class TestbedManager:
                 ),
             )
 
-            # Check if the response is a V1Status object
-            if isinstance(response, client.V1Status):
-                if response.status == "Success":
-                    logger.info(f"Job {testbed_id} deletion initiated successfully.")
-                else:
-                    logger.warning(
-                        f"Unexpected status for job {testbed_id} deletion: {response.status}"
-                    )
-            else:
-                # If it's not a V1Status, it's likely a dict with job status
-                logger.info(
-                    f"Job {testbed_id} deletion in progress. Current status: {response}"
-                )
-
-            # Delete the Service
             self.core_v1.delete_namespaced_service(
                 name=testbed_id,
                 namespace=self.namespace,
