@@ -123,6 +123,7 @@ def has_attribute_or_import_error(log_before):
             return True
     return False
 
+
 def get_test_directives(instance: SWEbenchInstance) -> list:
     """
     Get test directives from the test_patch of a task instance

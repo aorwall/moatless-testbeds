@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class Storage(ABC):
-
     @abstractmethod
     def store_dir(self, local_dir: str, remote_dir: str):
         pass

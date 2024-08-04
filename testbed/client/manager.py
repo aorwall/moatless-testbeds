@@ -17,9 +17,16 @@ from asyncio.subprocess import create_subprocess_shell, PIPE
 from aiohttp import ClientConnectorError
 from testbed.client.client import TestbedClient
 
-from testbed.schema import CreateTestbedResponse, TestbedStatusSummary, TestbedStatusDetailed, ContainerStatus, TestbedSummary, TestbedDetailed
+from testbed.schema import (
+    CreateTestbedResponse,
+    TestbedStatusSummary,
+    TestbedStatusDetailed,
+    ContainerStatus,
+    TestbedSummary,
+    TestbedDetailed,
+)
 
-KUBE_NAMESPACE = "testbeds"
+KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "testbeds")
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +38,7 @@ high_prio_instances = [
     "matplotlib__matplotlib-24149",
     "psf__requests-2317",
     "sympy__sympy-11870",
-    "sympy__sympy-18057"
+    "sympy__sympy-18057",
 ]
 
 high_cpu_instances = [
@@ -45,12 +52,11 @@ high_cpu_instances = [
     "sympy__sympy-16988",
     "sympy__sympy-17139",
     "sympy__sympy-18057",
-    "sympy__sympy-18199"
+    "sympy__sympy-18199",
 ]
 
 
 class TestbedManager:
-
     def __init__(self, namespace: str = KUBE_NAMESPACE, local_testing: bool = False):
         self.namespace = namespace
         self.container_name = "testbed"
@@ -59,14 +65,11 @@ class TestbedManager:
         self.batch_v1 = client.BatchV1Api()
 
         # Jinja2 environment setup
-        self.template_dir = os.path.join(os.path.dirname(__file__), 'template')
-        self.template_file = 'pod_template.yaml'
+        self.template_dir = os.path.join(os.path.dirname(__file__), "template")
+        self.template_file = "pod_template.yaml"
         self.env = Environment(loader=FileSystemLoader(self.template_dir))
-        self.job_template = self.env.get_template('pod_template.yaml')
-        self.service_template = self.env.get_template('service_template.yaml')
-
-        self.zeromq_req_port = 5557
-        self.zeromq_pubsub_port = 5556
+        self.job_template = self.env.get_template("pod_template.yaml")
+        self.service_template = self.env.get_template("service_template.yaml")
 
     def list_testbeds(self) -> List[TestbedSummary]:
         testbeds = []
@@ -74,11 +77,13 @@ class TestbedManager:
         for job in job_list.items:
             status = self._read_testbed_status_summary(job.metadata.name)
             if status:
-                testbeds.append(TestbedSummary(
-                    testbed_id=job.metadata.name,
-                    instance_id=job.metadata.labels.get("instance-id", "unknown"),
-                    status=status
-                ))
+                testbeds.append(
+                    TestbedSummary(
+                        testbed_id=job.metadata.name,
+                        instance_id=job.metadata.labels.get("instance-id", "unknown"),
+                        status=status,
+                    )
+                )
         return testbeds
 
     def get_testbed(self, testbed_id: str) -> Optional[TestbedDetailed]:
@@ -90,22 +95,28 @@ class TestbedManager:
                 try:
                     external_ip = self._get_service_external_ip(testbed_id)
                 except ValueError:
-                    logger.info(f"External IP not yet available for testbed {testbed_id}")
-                
+                    logger.debug(
+                        f"External IP not yet available for testbed {testbed_id}"
+                    )
+
                 return TestbedDetailed(
                     testbed_id=job.metadata.name,
                     instance_id=job.metadata.labels.get("instance-id", "unknown"),
                     status=status,
-                    external_ip=external_ip
+                    external_ip=external_ip,
                 )
         return None
 
-    def create_testbed(self, instance_id: str, user_id: str | None = None) -> CreateTestbedResponse:
+    def create_testbed(
+        self, instance_id: str, user_id: str | None = None
+    ) -> CreateTestbedResponse:
         logger.info(f"create_testbed(user: {user_id}, instance_id: {instance_id})")
 
         config_map_name = self._config_map_name(instance_id)
         try:
-            self.core_v1.read_namespaced_config_map(name=config_map_name, namespace=self.namespace)
+            self.core_v1.read_namespaced_config_map(
+                name=config_map_name, namespace=self.namespace
+            )
         except client.exceptions.ApiException as e:
             if e.status == 404:
                 raise Exception(f"Instance ID {instance_id} not found.")
@@ -114,38 +125,54 @@ class TestbedManager:
 
         try:
             testbed_id = self._generate_test_id(instance_id)
-            job_manifest = self._create_job_manifest(instance_id=instance_id, user_id=user_id, testbed_id=testbed_id)
+            job_manifest = self._create_job_manifest(
+                instance_id=instance_id, user_id=user_id, testbed_id=testbed_id
+            )
             service_manifest = self._create_service_manifest(testbed_id)
 
-            self.batch_v1.create_namespaced_job(body=job_manifest, namespace=self.namespace)
-            self.core_v1.create_namespaced_service(body=service_manifest, namespace=self.namespace)
+            self.batch_v1.create_namespaced_job(
+                body=job_manifest, namespace=self.namespace
+            )
+            self.core_v1.create_namespaced_service(
+                body=service_manifest, namespace=self.namespace
+            )
 
-            logger.info(f"create_testbed(user: {user_id}, instance_id: {instance_id}, testbed_id: {testbed_id}) Job and Service created successfully.")
+            logger.info(
+                f"create_testbed(user: {user_id}, instance_id: {instance_id}, testbed_id: {testbed_id}) Job and Service created successfully in namespace {self.namespace}."
+            )
             return CreateTestbedResponse(testbed_id=testbed_id)
         except client.exceptions.ApiException as e:
             if e.reason == "Conflict":
                 logger.warning(f"Job or Service already exists.")
                 raise ValueError(f"Testbed for instance {instance_id} already exists.")
             else:
-                logger.exception(f"Error creating job or service for instance {instance_id} and user {user_id}")
+                logger.exception(
+                    f"Error creating job or service for instance {instance_id} and user {user_id}"
+                )
                 raise RuntimeError("Error creating job or service")
 
     def create_client(self, testbed_id: str, timeout: float = 30) -> TestbedClient:
         start_time = time.time()
         while time.time() - start_time < timeout:
             testbed = self.get_testbed(testbed_id)
-            if testbed and testbed.status.pod_phase == "Running" and \
-               testbed.status.testbed.ready and testbed.status.testbed.state == "running" and \
-               testbed.status.sidecar.ready and testbed.status.sidecar.state == "running":
-                if testbed.external_ip:
-                    req_address = f"tcp://{testbed.external_ip}:{self.zeromq_req_port}"
-                    pubsub_address = f"tcp://{testbed.external_ip}:{self.zeromq_pubsub_port}"
-                    return TestbedClient(testbed_id=testbed_id, req_address=req_address, pubsub_address=pubsub_address)
-                else:
-                    logger.warning(f"External IP not yet available for testbed {testbed_id}")
-            
+            if (
+                testbed
+                and testbed.status.pod_phase == "Running"
+                and testbed.status.testbed.ready
+                and testbed.status.testbed.state == "running"
+                and testbed.status.sidecar.ready
+                and testbed.status.sidecar.state == "running"
+                and testbed.external_ip
+            ):
+                return TestbedClient(
+                    testbed_id=testbed_id, host=testbed.external_ip, port=8000
+                )
+            else:
+                logger.debug(
+                    f"Testbed {testbed_id} not ready yet. Status: {testbed.status}"
+                )
             time.sleep(1)  # Wait for 1 second before checking again
-        
+
         raise TimeoutError(f"Timeout waiting for testbed {testbed_id} to be ready")
 
     def delete_testbed(self, testbed_id: str, user_id: str | None = None):
@@ -157,26 +184,30 @@ class TestbedManager:
                     propagation_policy="Foreground", grace_period_seconds=0
                 ),
             )
-            
+
             # Check if the response is a V1Status object
             if isinstance(response, client.V1Status):
-                if response.status == 'Success':
+                if response.status == "Success":
                     logger.info(f"Job {testbed_id} deletion initiated successfully.")
                 else:
-                    logger.warning(f"Unexpected status for job {testbed_id} deletion: {response.status}")
+                    logger.warning(
+                        f"Unexpected status for job {testbed_id} deletion: {response.status}"
+                    )
             else:
                 # If it's not a V1Status, it's likely a dict with job status
-                logger.info(f"Job {testbed_id} deletion in progress. Current status: {response}")
-            
+                logger.info(
+                    f"Job {testbed_id} deletion in progress. Current status: {response}"
+                )
+
             # Delete the Service
             self.core_v1.delete_namespaced_service(
-                name=f"testbed-zeromq-service-{testbed_id}",
+                name=testbed_id,
                 namespace=self.namespace,
                 body=client.V1DeleteOptions(
                     propagation_policy="Foreground", grace_period_seconds=0
-                )
+                ),
             )
-            
+
             return response
 
         except client.exceptions.ApiException as e:
@@ -187,25 +218,27 @@ class TestbedManager:
                 logger.exception(error_message)
                 raise RuntimeError(error_message)
         except Exception as e:
-            error_message = f"Unexpected error during cleanup of job {testbed_id}: {str(e)}"
+            error_message = (
+                f"Unexpected error during cleanup of job {testbed_id}: {str(e)}"
+            )
             logger.exception(error_message)
             raise RuntimeError(error_message)
 
     def delete_all_testbeds(self, user_id: str | None = None):
         logger.info(f"Deleting all testbeds{' for user ' + user_id if user_id else ''}")
         job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
-        
+
         deleted_count = 0
         for job in job_list.items:
             if user_id and job.metadata.labels.get("user-id") != user_id:
                 continue
-            
+
             try:
                 self.delete_testbed(job.metadata.name)
                 deleted_count += 1
             except Exception as e:
                 logger.error(f"Failed to delete testbed {job.metadata.name}: {str(e)}")
-        
+
         logger.info(f"Deleted {deleted_count} testbeds")
         return deleted_count
 
@@ -215,7 +248,7 @@ class TestbedManager:
 
     def _generate_kubernetes_like_suffix(self, length=5):
         characters = string.ascii_lowercase + string.digits
-        return ''.join(random.choice(characters) for _ in range(length))
+        return "".join(random.choice(characters) for _ in range(length))
 
     def _generate_test_id(self, instance_id: str) -> str:
         suffix = self._generate_kubernetes_like_suffix()
@@ -225,13 +258,10 @@ class TestbedManager:
     def _config_map_name(self, instance_id: str) -> str:
         return f"instance-{instance_id.replace('_', '-')}-configmap"
 
-    def _create_job_manifest(self, instance_id: str, testbed_id: str, user_id: str) -> str:
+    def _create_job_manifest(
+        self, instance_id: str, testbed_id: str, user_id: str
+    ) -> str:
         configmap_name = self._config_map_name(instance_id)
-
-        if instance_id in high_prio_instances:
-            priority = "high-priority"
-        else:
-            priority = "default-priority"
 
         if instance_id in high_cpu_instances:
             limit_cpu = "1.2"
@@ -248,35 +278,36 @@ class TestbedManager:
             request_memory = "100Mi"
 
         context = {
-            'job_name': testbed_id,
-            'namespace': self.namespace,
-            'instance_id': instance_id,
-            'testbed_id': testbed_id,
-            'user_id': user_id,
-            'testbed_image':  f"moatless.azurecr.io/sweb.eval.x86_64.{instance_id}",
-            'sidecar_image': 'moatless.azurecr.io/testbed-sidecar:latest',
-            'configmap_name': configmap_name,
-            'priority': priority,
-            'limit_cpu': limit_cpu,
-            'limit_memory': limit_memory,
-            'request_cpu': request_cpu,
-            'request_memory': request_memory,
-            'zeromq_req_port': self.zeromq_req_port,
-            'zeromq_pubsub_port': self.zeromq_pubsub_port
+            "job_name": testbed_id,
+            "namespace": self.namespace,
+            "instance_id": instance_id,
+            "testbed_id": testbed_id,
+            "user_id": user_id,
+            "testbed_image": f"moatless.azurecr.io/sweb.eval.x86_64.{instance_id}",
+            "sidecar_image": "moatless.azurecr.io/testbed-sidecar:latest",
+            "configmap_name": configmap_name,
+            "limit_cpu": limit_cpu,
+            "limit_memory": limit_memory,
+            "request_cpu": request_cpu,
+            "request_memory": request_memory,
         }
         manifest_yaml = self.job_template.render(context)
         return yaml.safe_load(manifest_yaml)
 
     def _get_job(self, testbed_id: str):
         try:
-            return self.batch_v1.read_namespaced_job(name=testbed_id, namespace=self.namespace)
+            return self.batch_v1.read_namespaced_job(
+                name=testbed_id, namespace=self.namespace
+            )
         except client.exceptions.ApiException as e:
             if e.status == 404:
                 return None
             else:
                 raise
 
-    def _read_testbed_status_summary(self, job_name: str) -> Optional[TestbedStatusSummary]:
+    def _read_testbed_status_summary(
+        self, job_name: str
+    ) -> Optional[TestbedStatusSummary]:
         pod_list = self.core_v1.list_namespaced_pod(
             namespace=self.namespace, label_selector=f"job-name={job_name}"
         )
@@ -293,11 +324,13 @@ class TestbedManager:
             return TestbedStatusSummary(
                 pod_phase=pod.status.phase if pod.status else "Unknown",
                 testbed_ready=testbed_ready,
-                sidecar_ready=sidecar_ready
+                sidecar_ready=sidecar_ready,
             )
         return None
 
-    def _read_testbed_status_detailed(self, job_name: str) -> Optional[TestbedStatusDetailed]:
+    def _read_testbed_status_detailed(
+        self, job_name: str
+    ) -> Optional[TestbedStatusDetailed]:
         pod_list = self.core_v1.list_namespaced_pod(
             namespace=self.namespace, label_selector=f"job-name={job_name}"
         )
@@ -309,7 +342,7 @@ class TestbedManager:
             sidecar_status = ContainerStatus(
                 ready=False, started=False, restart_count=0, state="unknown"
             )
-            
+
             if pod.status and pod.status.container_statuses:
                 for container in pod.status.container_statuses:
                     status = self._get_container_status(container)
@@ -317,20 +350,20 @@ class TestbedManager:
                         testbed_status = status
                     elif container.name == "sidecar":
                         sidecar_status = status
-            
+
             return TestbedStatusDetailed(
                 pod_phase=pod.status.phase if pod.status else "Unknown",
                 testbed=testbed_status,
-                sidecar=sidecar_status
+                sidecar=sidecar_status,
             )
         else:
             return None
 
     def _get_container_status(self, container) -> ContainerStatus:
-        state = "unknown"
+        state = "pending"
         reason = None
         message = None
-        
+
         if container.state.running:
             state = "running"
         elif container.state.waiting:
@@ -341,28 +374,28 @@ class TestbedManager:
             state = "terminated"
             reason = container.state.terminated.reason
             message = container.state.terminated.message
-        
+
         return ContainerStatus(
             ready=container.ready,
             started=container.started,
             restart_count=container.restart_count,
             state=state,
             reason=reason,
-            message=message
+            message=message,
         )
 
     def _get_service_external_ip(self, testbed_id: str) -> str:
-        service = self.core_v1.read_namespaced_service(name=f"testbed-zeromq-service-{testbed_id}", namespace=self.namespace)
+        service = self.core_v1.read_namespaced_service(
+            name=testbed_id, namespace=self.namespace
+        )
         if service.status.load_balancer.ingress:
             return service.status.load_balancer.ingress[0].ip
         raise ValueError(f"No external IP found for testbed {testbed_id}")
 
     def _create_service_manifest(self, testbed_id: str) -> str:
         context = {
-            'testbed_id': testbed_id,
-            'namespace': self.namespace,
-            'zeromq_pubsub_port': self.zeromq_pubsub_port,
-            'zeromq_req_port': self.zeromq_req_port
+            "testbed_id": testbed_id,
+            "namespace": self.namespace,
         }
         manifest_yaml = self.service_template.render(context)
         return yaml.safe_load(manifest_yaml)

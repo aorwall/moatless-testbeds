@@ -8,6 +8,7 @@ ENV_IMAGE_BUILD_DIR = Path("image_build_logs/env")
 INSTANCE_IMAGE_BUILD_DIR = Path("image_build_logs/instances")
 RUN_INSTANCE_LOG_DIR = Path("run_instance_logs")
 
+
 # Constants - Task Instance Class
 class SWEbenchInstance(TypedDict):
     repo: str
@@ -30,16 +31,19 @@ FAIL_TO_FAIL = "FAIL_TO_FAIL"
 PASS_TO_PASS = "PASS_TO_PASS"
 PASS_TO_FAIL = "PASS_TO_FAIL"
 
+
 class ResolvedStatus(Enum):
     NO = "RESOLVED_NO"
     PARTIAL = "RESOLVED_PARTIAL"
     FULL = "RESOLVED_FULL"
+
 
 class TestStatus(Enum):
     FAILED = "FAILED"
     PASSED = "PASSED"
     SKIPPED = "SKIPPED"
     ERROR = "ERROR"
+
 
 TEST_PYTEST = "pytest --no-header -rA --tb=no -p no:cacheprovider"
 TEST_PYTEST_VERBOSE = "pytest -rA --tb=long -p no:cacheprovider"
@@ -51,7 +55,9 @@ TEST_SEABORN_VERBOSE = "pytest -rA --tb=long"
 TEST_PYTEST = "pytest -rA"
 TEST_PYTEST_VERBOSE = "pytest -rA --tb=long"
 TEST_SPHINX = "tox --current-env -epy39 -v --"
-TEST_SYMPY = "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+TEST_SYMPY = (
+    "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+)
 TEST_SYMPY_VERBOSE = "bin/test -C --verbose"
 
 
@@ -212,7 +218,7 @@ SPECS_DJANGO.update(
         for k in ["5.0"]
     }
 )
-SPECS_DJANGO['1.9']['test_cmd'] = TEST_DJANGO_NO_PARALLEL
+SPECS_DJANGO["1.9"]["test_cmd"] = TEST_DJANGO_NO_PARALLEL
 
 SPECS_REQUESTS = {
     k: {
@@ -222,7 +228,7 @@ SPECS_REQUESTS = {
         "test_cmd": TEST_PYTEST,
         "eval_commands": [
             "pip install --upgrade certifi",
-            "export HTTPBIN_URL=http://httpbin.moatless.ai/"
+            "export HTTPBIN_URL=http://httpbin.moatless.ai/",
         ],
     }
     for k in ["0.7", "0.8", "0.9", "0.11", "0.13", "0.14", "1.1", "1.2", "2.0", "2.2"]
@@ -505,42 +511,46 @@ SPECS_SPHINX = {
     + ["4.5", "5.0", "5.1", "5.2", "5.3", "6.0", "6.2", "7.0", "7.1", "7.2"]
 }
 for k in ["3.0", "3.1", "3.2", "3.3", "3.4", "3.5", "4.0", "4.1", "4.2", "4.3", "4.4"]:
-    SPECS_SPHINX[k][
-        "pre_install"
-    ].extend([
-        "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
-        "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
-        "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
-        "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
-        "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
-        'sed -i "s/\'packaging\',/\'packaging\', \'markupsafe<=2.0.1\',/" setup.py',
-    ])
+    SPECS_SPHINX[k]["pre_install"].extend(
+        [
+            "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+            "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+            "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+            "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+            "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+            "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+        ]
+    )
     if k in ["4.2", "4.3", "4.4"]:
-        SPECS_SPHINX[k]["pre_install"].extend([
-            "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py",
-            "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py",
-        ])
+        SPECS_SPHINX[k]["pre_install"].extend(
+            [
+                "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py",
+                "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py",
+            ]
+        )
     elif k == "4.1":
-        SPECS_SPHINX[k]["pre_install"].extend([
-            (
-                "grep -q 'sphinxcontrib-htmlhelp>=2.0.0' setup.py && "
-                "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py || "
-                "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py"
-            ),
-            (
-                "grep -q 'sphinxcontrib-serializinghtml>=1.1.5' setup.py && "
-                "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py || "
-                "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
-            )
-        ])
+        SPECS_SPHINX[k]["pre_install"].extend(
+            [
+                (
+                    "grep -q 'sphinxcontrib-htmlhelp>=2.0.0' setup.py && "
+                    "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py || "
+                    "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py"
+                ),
+                (
+                    "grep -q 'sphinxcontrib-serializinghtml>=1.1.5' setup.py && "
+                    "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py || "
+                    "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+                ),
+            ]
+        )
     else:
-        SPECS_SPHINX[k]["pre_install"].extend([
-            "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
-            "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py",
-        ])
-SPECS_SPHINX["7.2"]["pre_install"] += [
-    "apt-get update && apt-get install -y graphviz"
-]
+        SPECS_SPHINX[k]["pre_install"].extend(
+            [
+                "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+                "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py",
+            ]
+        )
+SPECS_SPHINX["7.2"]["pre_install"] += ["apt-get update && apt-get install -y graphviz"]
 
 SPECS_ASTROPY = {
     k: {
@@ -617,7 +627,7 @@ SPECS_ASTROPY["1.3"] = {
         "pytest==3.3.1",
         "PyYAML==3.12",
         "sortedcontainers==1.5.9",
-        "tomli==0.2.0"
+        "tomli==0.2.0",
     ],
     "test_cmd": TEST_ASTROPY_PYTEST,
 }
@@ -697,7 +707,7 @@ SPECS_XARRAY = {
             "six==1.16.0",
             "scipy==1.11.1",
             "setuptools==68.0.0",
-            "dask==2021.5.0"
+            "dask==2021.5.0",
         ],
         "no_use_env": True,
         "test_cmd": TEST_PYTEST,
@@ -884,15 +894,9 @@ SPECS_PYDICOM = {
         "3.0",
     ]
 }
-SPECS_PYDICOM.update(
-    {k: {**SPECS_PYDICOM[k], "python": "3.8"} for k in ["1.4", "2.0"]}
-)
-SPECS_PYDICOM.update(
-    {k: {**SPECS_PYDICOM[k], "python": "3.9"} for k in ["2.1", "2.2"]}
-)
-SPECS_PYDICOM.update(
-    {k: {**SPECS_PYDICOM[k], "python": "3.10"} for k in ["2.3"]}
-)
+SPECS_PYDICOM.update({k: {**SPECS_PYDICOM[k], "python": "3.8"} for k in ["1.4", "2.0"]})
+SPECS_PYDICOM.update({k: {**SPECS_PYDICOM[k], "python": "3.9"} for k in ["2.1", "2.2"]})
+SPECS_PYDICOM.update({k: {**SPECS_PYDICOM[k], "python": "3.10"} for k in ["2.3"]})
 SPECS_PYDICOM.update(
     {k: {**SPECS_PYDICOM[k], "python": "3.11"} for k in ["2.4", "3.0"]}
 )

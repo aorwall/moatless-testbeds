@@ -1,0 +1,12 @@
+kubernetes
+pydantic
+
+# Client
+jinja2
+
+# Server
+flask
+gunicorn
+
+# Azure specific
+azure-storage-blob

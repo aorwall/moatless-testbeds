@@ -20,57 +20,87 @@ ExecResult = namedtuple("ExecResult", "exit_code,output")
 
 
 class KubernetesContainer(Container):
-
     def __init__(
-        self, pod_name: str = os.getenv("POD_NAME"), namespace: str = os.getenv("KUBE_NAMESPACE", "testbeds")
+        self,
+        pod_name: str = os.getenv("POD_NAME"),
+        namespace: str = os.getenv("KUBE_NAMESPACE", "testbeds"),
     ):
         self.namespace = namespace
         self.container_name = "testbed"
         self.pod_name = pod_name
 
+        # Load the kubeconfig
+        try:
+            config.load_incluster_config()
+            logger.info("Loaded in-cluster Kubernetes configuration")
+        except config.ConfigException:
+            try:
+                config.load_kube_config()
+                logger.info("Loaded Kubernetes configuration from default location")
+            except config.ConfigException:
+                logger.error("Could not load Kubernetes configuration")
+                raise
+
         self.core_v1 = client.CoreV1Api()
         self.batch_v1 = client.BatchV1Api()
+
+        logger.info(
+            f"Initialized KubernetesContainer with pod_name={self.pod_name}, namespace={self.namespace}"
+        )
 
     def __str__(self):
         return f"Container {self.container_name}:{self.pod_name}:{self.namespace}"
 
     def is_reachable(self, timeout: int = 10) -> bool:
-        """
-        Verify that the container is reachable.
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                result = self.exec_run(
+                    "echo 'Container is reachable'", timeout=5, retries=1
+                )
+                if result.exit_code == 0 and "Container is reachable" in result.output:
+                    logger.debug("Container is reachable")
+                    return True
+                else:
+                    logger.warning(f"Unexpected result: {result}")
+            except Exception as e:
+                logger.warning(f"Error checking container reachability: {e}")
+            time.sleep(1)
 
-        Args:
-            timeout (int): Maximum time to wait for a response, in seconds.
+        logger.error(
+            f"Container {self.pod_name} in namespace {self.namespace} is not reachable after {timeout} seconds"
+        )
+        return False
 
-        Returns:
-            bool: True if the container is reachable, False otherwise.
-        """
+    def is_pod_ready(self) -> bool:
         try:
-            result = self.exec_run("echo 'Container is reachable'", timeout=timeout, retries=10, delay=2)
-            logger.info(f"Container reachability check result: {result}")
-            return result.exit_code == 0 and "Container is reachable" in result.output
-        except Exception as e:
-            logger.warning(f"Error checking container reachability: {e}")
+            pod = self.core_v1.read_namespaced_pod(
+                name=self.pod_name, namespace=self.namespace
+            )
+            for condition in pod.status.conditions:
+                if condition.type == "Ready" and condition.status == "True":
+                    logger.info(f"Pod {self.pod_name} is ready")
+                    return True
+            logger.warning(f"Pod {self.pod_name} is not ready")
+            return False
+        except ApiException as e:
+            logger.error(f"Error checking pod readiness: {e}")
             return False
 
-    def exec_run(self, cmd: str, timeout: int | None = None, retries: int = 3, delay: int = 2) -> ExecResult:
-        """
-        Execute a command in the container with retries.
-
-        Args:
-            cmd (str): Command to execute.
-            timeout (int | None): Maximum time to wait for a response, in seconds.
-            retries (int): Number of retry attempts.
-            delay (int): Delay between retries, in seconds.
-
-        Returns:
-            ExecResult: Result of the command execution.
-        """
-        logger.info(f"Executing command: {cmd}")
+    def exec_run(
+        self, cmd: str, timeout: int | None = None, retries: int = 3, delay: int = 2
+    ) -> ExecResult:
+        logger.debug(
+            f"Executing command in pod {self.pod_name}, namespace {self.namespace}: {cmd}"
+        )
         exec_command = cmd.split()
         attempt = 0
 
         while attempt < retries:
             try:
+                logger.debug(
+                    f"Attempt {attempt + 1}: Calling connect_get_namespaced_pod_exec"
+                )
                 resp = stream(
                     self.core_v1.connect_get_namespaced_pod_exec,
                     self.pod_name,
@@ -82,16 +112,24 @@ class KubernetesContainer(Container):
                     stdin=False,
                     stdout=True,
                     tty=False,
-                    _preload_content=False
+                    _preload_content=False,
                 )
+                logger.debug("Stream object created successfully")
+
                 stdout, stderr = "", ""
-                while resp.is_open():
-                    resp.update(timeout=1)
-                    if resp.peek_stdout():
-                        stdout += resp.read_stdout()
-                    if resp.peek_stderr():
-                        stderr += resp.read_stderr()
+                try:
+                    while resp.is_open():
+                        resp.update(timeout=1)
+                        if resp.peek_stdout():
+                            stdout += resp.read_stdout()
+                        if resp.peek_stderr():
+                            stderr += resp.read_stderr()
+                except Exception as e:
+                    logger.error(f"Error while reading from stream: {e}")
+                    raise
+
                 exit_code = resp.returncode
+                logger.debug(f"Command execution completed with exit code: {exit_code}")
 
                 if stdout and stderr:
                     output = f"STDOUT: {stdout}\nSTDERR: {stderr}"
@@ -102,18 +140,23 @@ class KubernetesContainer(Container):
                 else:
                     output = ""
 
-                logger.info(f"Command executed with exit code {exit_code}")
-
+                logger.debug(f"Command executed with exit code {exit_code}")
                 return ExecResult(exit_code=exit_code, output=output)
 
             except ApiException as e:
-                logger.warning(f"Attempt {attempt + 1} failed: {e}")
+                logger.warning(
+                    f"Attempt {attempt + 1}/{retries} to execute command `{cmd}` on {self} failed: {e}"
+                )
+                logger.debug(f"API Exception details: {e.body}")
                 attempt += 1
                 if attempt < retries:
                     logger.info(f"Retrying in {delay} seconds...")
                     time.sleep(delay)
                 else:
-                    logger.exception("Failed to execute command")
+                    logger.error(
+                        f"Failed to execute command after {retries} attempts: {cmd}"
+                    )
+                    raise
 
         raise Exception(f"Failed to execute command: {cmd}")
 
@@ -122,29 +165,33 @@ class KubernetesContainer(Container):
             os.remove(test_output_path)
 
         # Trigger the eval script
-        with open('/shared/run_eval', 'w') as f:
+        with open("/shared/run_eval", "w") as f:
             pass  # Just create an empty file
 
         logger.info("Triggered /shared/eval.sh execution")
 
         start_time = time.time()
 
-        while not os.path.exists('/shared/eval_complete'):
+        while not os.path.exists("/shared/eval_complete"):
             if time.time() - start_time > timeout:
                 with open(test_output_path, "a") as f:
                     f.write(f"\n\nTimeout error: {timeout} seconds exceeded.")
 
-                logger.warning(f"Evaluation timed out after {time.time() - start_time} seconds")
+                logger.warning(
+                    f"Evaluation timed out after {time.time() - start_time} seconds"
+                )
                 raise TimeoutError("Evaluation timed out")
             time.sleep(1)
 
-        logger.info(f"Evaluation completed after {time.time() - start_time} seconds. Move test output to {test_output_path}")
-        shutil.move('/shared/test_output.txt', test_output_path)
+        logger.info(
+            f"Evaluation completed after {time.time() - start_time} seconds. Move test output to {test_output_path}"
+        )
+        shutil.move("/shared/test_output.txt", test_output_path)
 
-        os.remove('/shared/eval_complete')
+        os.remove("/shared/eval_complete")
 
     def kill(self):
-        with open('/shared/kill', 'w') as f:
+        with open("/shared/kill", "w") as f:
             pass
         logger.info("Kill command sent")
 
@@ -157,7 +204,9 @@ class KubernetesContainer(Container):
             dst (Path): Destination file path in the container
         """
 
-        shared_volume_path = Path("/shared")  # Path where the shared volume is mounted in the container
+        shared_volume_path = Path(
+            "/shared"
+        )  # Path where the shared volume is mounted in the container
 
         # Check if destination path is valid
         if os.path.dirname(dst) == "":
@@ -246,7 +295,7 @@ class KubernetesContainer(Container):
         try:
             if isinstance(data, str):
                 data = data.encode("utf-8")
-            with open(shared_path, 'wb') as file:
+            with open(shared_path, "wb") as file:
                 file.write(data)
             logger.info(f"Successfully wrote to {shared_path}")
         except Exception as e:

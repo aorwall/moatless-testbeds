@@ -13,7 +13,6 @@ ExecResult = namedtuple("ExecResult", "exit_code,output")
 
 
 class Container(ABC):
-
     @abstractmethod
     def is_reachable(self, timeout: int = 10) -> bool:
         """
@@ -28,7 +27,9 @@ class Container(ABC):
         pass
 
     @abstractmethod
-    def exec_run(self, cmd: str, timeout: int | None = None, retries: int = 3, delay: int = 2) -> ExecResult:
+    def exec_run(
+        self, cmd: str, timeout: int | None = None, retries: int = 3, delay: int = 2
+    ) -> ExecResult:
         """
         Execute a command in the container with retries.
 

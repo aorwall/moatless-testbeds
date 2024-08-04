@@ -1,16 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: testbed-zeromq-service-{{ testbed_id }}
+  name: {{ testbed_id }}
   namespace: {{ namespace }}
 spec:
   selector:
     job-name: {{ testbed_id }}
   type: LoadBalancer
   ports:
-    - name: zeromq-req
-      port: {{ zeromq_req_port }}
-      targetPort: {{ zeromq_req_port }}
-    - name: zeromq-pubsub
-      port: {{ zeromq_pubsub_port }}
-      targetPort: {{ zeromq_pubsub_port }}
+    - name: http
+      port: 8000
+      targetPort: 8000

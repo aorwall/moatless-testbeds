@@ -11,7 +11,6 @@ spec:
   template:
     spec:
       serviceAccountName: testbed-service-account
-      priorityClassName: {{ priority }}
       containers:
       - name: testbed
         image: {{ testbed_image }}
@@ -44,42 +43,37 @@ spec:
         volumeMounts:
         - name: shared-volume
           mountPath: /shared
-        ports:
-        - containerPort: {{ zeromq_pubsub_port }}
-        - containerPort: {{ zeromq_req_port }}
-        env:
-        - name: ZEROMQ_PUBSUB_PORT
-          value: "{{ zeromq_pubsub_port }}"
-        - name: ZEROMQ_REQ_PORT
-          value: "{{ zeromq_req_port }}"
       - name: sidecar
         image: {{ sidecar_image }}
         imagePullPolicy: Always
         ports:
-        - containerPort: {{ zeromq_pubsub_port }}
-        - containerPort: {{ zeromq_req_port }}
-        #livenessProbe:
-        #  httpGet:
-        #    path: /health
-        #    port: 8000
-        #  initialDelaySeconds: 1
-        #  periodSeconds: 1
-        #readinessProbe:
-        #  httpGet:
-        #    path: /health
-        #    port: 8000
-        #  initialDelaySeconds: 1
-        #  periodSeconds: 1
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 1
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 1
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          failureThreshold: 30
+          periodSeconds: 10
         volumeMounts:
         - name: config-volume
           mountPath: /etc/config
         - name: shared-volume
           mountPath: /shared
         env:
-        - name: ZEROMQ_PUBSUB_PORT
-          value: "{{ zeromq_pubsub_port }}"
-        - name: ZEROMQ_REQ_PORT
-          value: "{{ zeromq_req_port }}"
+        - name: HTTP_PORT
+          value: "8000"
         - name: KUBE_NAMESPACE
           valueFrom:
             fieldRef:

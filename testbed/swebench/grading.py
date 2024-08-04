@@ -7,6 +7,7 @@ from testbed.swebench.constants import (
     APPLY_PATCH_PASS,
     FAIL_TO_FAIL,
     FAIL_TO_PASS,
+    KEY_INSTANCE_ID,
     PASS_TO_FAIL,
     PASS_TO_PASS,
     RESET_FAILED,
@@ -20,7 +21,8 @@ from testbed.swebench.test_spec import TestSpec
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Any
-from testbed.schema import EvaluationResult, TestsStatus, TestResult
+from testbed.schema import EvaluationResult, Prediction, TestsStatus, TestResult
+
 
 # MARK: Utility functions
 def get_file_name_from_lp(x: str) -> str:
@@ -41,7 +43,8 @@ def test_passed(case: str, sm: dict[str, str]) -> bool:
 
 def test_failed(case: str, sm: dict[str, str]) -> bool:
     return case not in sm or any(
-        sm[case] == status for status in [TestStatus.FAILED.value, TestStatus.ERROR.value]
+        sm[case] == status
+        for status in [TestStatus.FAILED.value, TestStatus.ERROR.value]
     )
 
 
@@ -54,12 +57,14 @@ def get_logs_eval(log_fp: str) -> tuple[dict[str, str], bool]:
     Returns:
         bool: whether the patch applied successfully
         dict: status map
-    
+
     TODO(john-b-yang): Check this is working properly...
     """
     # Convert e.g. "logs/scikit-learn__scikit-learn-12421/test_output.txt" to "scikit-learn/scikit-learn"
     sample_id = str(Path(log_fp).parent.stem)  # e.g. scikit-learn__scikit-learn-12421
-    repo = "-".join(sample_id.replace("__", "/").split("-")[:-1])  # e.g. scikit-learn/scikit-learn
+    repo = "-".join(
+        sample_id.replace("__", "/").split("-")[:-1]
+    )  # e.g. scikit-learn/scikit-learn
     log_parser = MAP_REPO_TO_PARSER[repo]
 
     if not os.path.exists(log_fp):
@@ -91,7 +96,7 @@ def get_logs_eval(log_fp: str) -> tuple[dict[str, str], bool]:
         return log_parser(content), True
 
 
-def get_eval_report(
+def get_eval_tests_report(
     eval_sm: dict[str, str],
     gold_results: dict[str, str],
     calculate_to_fail: bool = False,
@@ -221,11 +226,11 @@ def get_resolution_status(report: dict[str, dict[str, Any]]) -> str:
         return ResolvedStatus.PARTIAL.value
     else:
         return ResolvedStatus.NO.value
-    
+
 
 def get_pred_report(
     test_spec: TestSpec,
-    prediction: dict[str, str],
+    prediction: Prediction,
     log_path: str,
     include_tests_status: bool,
 ) -> EvaluationResult:
@@ -234,18 +239,17 @@ def get_pred_report(
     and evaluation log.
 
     Args:
-        test_spec (dict): test spec containing keys "instance_id", "FAIL_TO_PASS", and "PASS
-        prediction (dict): prediction containing keys "instance_id", "model_name_or_path", and "model_patch"
+        test_spec (TestSpec): test spec containing keys "instance_id", "FAIL_TO_PASS", and "PASS
+        prediction (Prediction): prediction containing keys "instance_id", "model_name_or_path", and "model_patch"
         log_path (str): path to evaluation log
         include_tests_status (bool): whether to include the status of each test in the returned report
     Returns:
         report (EvaluationResult): report of metrics
     """
-    instance_id = prediction["instance_id"]
+    instance_id = prediction.instance_id
     result = EvaluationResult(instance_id=instance_id)
 
-    # Check if the model patch exists
-    if prediction["model_patch"] is None:
+    if prediction.patch is None:
         return result
 
     # Get evaluation logs
@@ -256,12 +260,12 @@ def get_pred_report(
     result.patch_applied = True
 
     eval_ref = {
-        "instance_id": test_spec.instance_id,
-        "FAIL_TO_PASS": test_spec.FAIL_TO_PASS,
-        "PASS_TO_PASS": test_spec.PASS_TO_PASS,
+        KEY_INSTANCE_ID: test_spec.instance_id,
+        FAIL_TO_PASS: test_spec.FAIL_TO_PASS,
+        PASS_TO_PASS: test_spec.PASS_TO_PASS,
     }
 
-    report = get_eval_report(eval_sm, eval_ref, calculate_to_fail=True)
+    report = get_eval_tests_report(eval_sm, eval_ref)
     if get_resolution_status(report) == ResolvedStatus.FULL.value:
         result.resolved = True
 
@@ -270,5 +274,5 @@ def get_pred_report(
             FAIL_TO_PASS=TestResult(**report[FAIL_TO_PASS]),
             PASS_TO_PASS=TestResult(**report[PASS_TO_PASS]),
         )
-    
+
     return result

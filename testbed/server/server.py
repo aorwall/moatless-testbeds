@@ -1,76 +1,89 @@
 import os
-import json
-import logging
-import zmq
-import threading
 import time
-from testbed.client.comm.zeromq_communicator import ZeroMQCommunicator
-from testbed.client.comm.communicator import Message
+
+from flask import Flask, request, jsonify
+import logging
 from testbed.server.testbed import Testbed
-from testbed.schema import EvaluationResult
-import websockets
+from testbed.schema import Prediction
+from kubernetes import config as k8s_config
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
-class Server:
 
-    def __init__(self):
-        self.testbed_id = os.getenv("TESTBED_ID", "test_testbed")
-        pubsub_port = os.getenv("ZEROMQ_PUBSUB_PORT", 5556)
-        req_port = os.getenv("ZEROMQ_REQ_PORT", 5557)
-        self.pubsub_address = f"tcp://*:{pubsub_port}"
-        self.req_address = f"tcp://*:{req_port}"
-        self.communicator = ZeroMQCommunicator(testbed_id=self.testbed_id, pubsub_address=self.pubsub_address, req_address=self.req_address, is_server=True)
-        self.testbed = Testbed(self.testbed_id)
-        self.running = False
-        self.clients = set()
+def create_app():
+    app = Flask(__name__)
 
-        logger.info(f"Server initialized with testbed_id: {self.testbed_id}, pubsub_address: {self.pubsub_address}, req_address: {self.req_address}")
-
-    async def start_server(self):
-        server = await websockets.serve(self.handle_client, '0.0.0.0', 8765)
-        logger.info(f"WebSocket server started on 0.0.0.0:8765")
-        await server.wait_closed()
-
-    def run(self):
-        if not self.testbed.container.is_reachable(timeout=30):
-            logger.error("Container is not reachable.")
-            raise Exception("Container is not reachable.")
-
-        self.running = True
-        with self.communicator:
-            while self.running:
-                self.communicator.handle_requests(self.process_message, timeout=100)
-
-    def stop(self):
-        self.running = False
-
-    def process_message(self, message):
+    # Log Kubernetes configuration
+    try:
+        k8s_config.load_incluster_config()
+        logger.info("Loaded in-cluster Kubernetes configuration")
+    except k8s_config.ConfigException:
         try:
-            logger.info(f"Received message: {message}")
-            if message.type == "ping":
-                return Message("pong", {})
-            elif message.type == "run_prediction":
-                body = message.body
-                run_id = body.get("run_id")
-                if run_id:
-                    # Start evaluation in a separate thread
-                    threading.Thread(target=self.run_evaluation, args=(run_id,)).start()
-                    return Message("evaluation_started", {"run_id": run_id})
-                else:
-                    logger.error("Missing run_id in run_prediction message.")
-                    return Message("error", {"message": "Missing run_id"})
+            k8s_config.load_kube_config()
+            logger.info("Loaded Kubernetes configuration from default location")
+        except k8s_config.ConfigException:
+            logger.error("Could not load Kubernetes configuration")
+
+    testbed = Testbed(os.getenv("TESTBED_ID", "test_testbed"))
+
+    @lru_cache(maxsize=1)
+    def check_container_reachability():
+        return testbed.container.is_reachable()
+
+    @app.route("/health", methods=["GET"])
+    def health():
+        logger.debug(f"health() Health check from {request.remote_addr}")
+        try:
+            if check_container_reachability():
+                logger.debug("health() status OK")
+                return jsonify({"status": "OK"}), 200
             else:
-                logger.warning(f"Unknown message type: {message.type}")
-                return Message("error", {"message": f"Unknown message type: {message.type}"})
+                logger.warning("health() Container is not reachable")
+                return jsonify(
+                    {"status": "ERROR", "message": "Testbed container is not reachable"}
+                ), 500
         except Exception as e:
-            logger.error(f"Error processing message: {str(e)}")
-            return Message("error", {"message": str(e)})
-    
-    def run_evaluation(self, run_id):
+            logger.exception("health() Error checking container reachability")
+            return jsonify(
+                {
+                    "status": "ERROR",
+                    "message": f"Error checking container reachability: {str(e)}",
+                }
+            ), 500
+
+    # Invalidate cache every 60 seconds
+    @app.before_request
+    def clear_cache():
+        if time.time() - clear_cache.last_cleared > 60:
+            check_container_reachability.cache_clear()
+            clear_cache.last_cleared = time.time()
+
+    clear_cache.last_cleared = time.time()
+
+    @app.route("/run_evaluation", methods=["POST"])
+    def run_evaluation():
+        logger.info("run_evaluation() Run evaluation requested")
+        start_time = time.time()
+        data = request.json
+        prediction = Prediction.model_validate(data)
+        if not prediction:
+            logger.warning("run_evaluation() Missing prediction in request")
+            return jsonify({"error": "Missing prediction"}), 400
+
         try:
-            result = self.testbed.run_evaluation(run_id)
-            self.communicator.publish_message("evaluation_finished", {"run_id": run_id, "result": result.model_dump(exclude_none=True, exclude_unset=True)})
+            logger.debug("Starting evaluation")
+            result = testbed.run_evaluation(prediction)
+            logger.info(f"run_evaluation() Evaluation completed in {time.time() - start_time:.2f} seconds")
+            return jsonify(result.model_dump())
         except Exception as e:
-            logger.exception(f"Error running evaluation")
-            self.communicator.publish_message("evaluation_error", {"run_id": run_id, "error": str(e)})
+            logger.exception(f"run_evaluation() Error during evaluation after {time.time() - start_time:.2f} seconds")
+            return jsonify({"error": str(e)}), 500
+
+    return app
+
+
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
