@@ -13,15 +13,15 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-logger.info(f"Loaded environment variables from .env file")
-logger.info(f"KUBE_NAMESPACE: {os.getenv('KUBE_NAMESPACE')}")
-
 def is_correct_k8s_context():
     try:
         config.load_kube_config()
         _, active_context = config.list_kube_config_contexts()
         current_namespace = active_context['context']['namespace']
-        return current_namespace == os.getenv('KUBE_NAMESPACE')
+        correct_namespace = current_namespace == os.getenv('KUBE_NAMESPACE')
+        if not correct_namespace:
+            logger.error(f"Current namespace is {current_namespace}, expected {os.getenv('KUBE_NAMESPACE')}")
+        return correct_namespace
     except Exception as e:
         logger.error(f"Error checking Kubernetes context: {e}")
         return False
@@ -36,6 +36,9 @@ def test_full_integration():
     with TestbedSDK(instance_id, os.getenv("KUBE_NAMESPACE")) as sdk:
         logger.info(f"Test {test_id}: Running evaluation")
         run_id = f"test_run_integration_{test_id}"
+
+        content = sdk.read_file("sympy/polys/monomials.py")
+        logger.info(f"Test {test_id}: File content: {content}")
         patch = ""
         result = sdk.run_evaluation(run_id, patch)
         logger.info(f"Test {test_id}: Evaluation finished")
@@ -43,6 +46,9 @@ def test_full_integration():
         assert result.resolved
         assert result.tests_status
         logger.info(f"Test {test_id}: Evaluation result received")
+
+        content = sdk.read_file("sympy/polys/monomials.py")
+        logger.info(f"Test {test_id}: File content: {content}")
 
     logger.info(f"Test {test_id}: Integration test completed successfully")
 

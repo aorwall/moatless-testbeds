@@ -3,8 +3,11 @@ import logging
 from contextlib import contextmanager
 from testbed import utils
 from testbed.client.manager import TestbedManager
-from testbed.schema import EvaluationResult, Prediction
+from testbed.schema import EvaluationResult, Prediction, RunEvaluationRequest
 from kubernetes import config
+
+from testbed.swebench.test_spec import make_env_setup_script_list
+from testbed.swebench.utils import load_swebench_dataset, load_swebench_instance
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +26,13 @@ class TestbedSDK:
         logger.info(f"Creating testbed for instance {self.instance_id} in namespace {self.namespace}")
         response = self.manager.create_testbed(self.instance_id)
         self.testbed_id = response.testbed_id
-        utils.wait_for_testbed_ready(self.manager, self.testbed_id)
+
+        self.instance = load_swebench_instance(instance_id=self.instance_id, name="princeton-nlp/SWE-bench_Lite")
+
+        self.manager.wait_for_testbed_ready(self.testbed_id)
         self.client = self.manager.create_client(self.testbed_id)
         logger.info(f"Client created, running health check")
-        assert self.check_health(
-            timeout=120
-        ), f"Health check on testbed failed"
-        logger.info(f"Health check successful, client ready")
-
+        
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -40,33 +42,68 @@ class TestbedSDK:
         if self.manager:
             self.manager.close()
 
-    def _wait_for_testbed_ready(self, max_wait_time=300):
-        start_time = time.time()
-        logger.info(f"Waiting for testbed to be ready (max {max_wait_time} seconds)")
-        while time.time() - start_time < max_wait_time:
-            testbed = self.manager.get_testbed(self.testbed_id)
-            if (
-                testbed
-                and testbed.status.pod_phase == "Running"
-                and testbed.status.testbed.ready
-                and testbed.status.testbed.state == "running"
-                and testbed.status.sidecar.ready
-                and testbed.status.sidecar.state == "running"
-                and testbed.external_ip
-            ):
-                logger.info("Testbed is ready")
-                return
-            time.sleep(5)
-            logger.info("Still waiting for testbed to be ready...")
-        raise TimeoutError(
-            f"Testbed {self.testbed_id} did not become ready within {max_wait_time} seconds"
-        )
-
     def check_health(self, timeout=30):
         return self.client.check_health(timeout=timeout)
 
-    def run_evaluation(self, run_id, patch) -> EvaluationResult:
-        prediction = Prediction(
-            run_id=run_id, instance_id=self.instance_id, patch=patch
+    def setup_swebench_environment(self):
+        setup_commands = make_env_setup_script_list(self.instance)
+        self.client.execute_commands(setup_commands)
+
+    def run_evaluation(self, run_id: str, patch: str | None = None) -> EvaluationResult:
+
+        dataset = load_swebench_dataset(name="princeton-nlp/SWE-bench_Lite")
+        instance = dataset[self.instance_id]
+
+        request = RunEvaluationRequest(
+            run_id=run_id, instance=instance, patch=patch
         )
-        return self.client.run_evaluation(prediction)
+        return self.client.run_evaluation(request)
+
+    def save_file(self, file_path: str, content: str):
+        """
+        Save a file to the testbed.
+
+        Args:
+            file_path (str): The path where the file should be saved in the testbed.
+            content (str): The content of the file to be saved.
+
+        Returns:
+            dict: The response from the save operation.
+
+        Raises:
+            Exception: If there's an error saving the file.
+        """
+        logger.info(f"Saving file to {file_path}")
+        try:
+            response = self.client.save_file(file_path, content)
+            if 'error' in response:
+                raise Exception(f"Failed to save file: {response['error']}")
+            logger.info(f"File saved successfully to {file_path}")
+            return response
+        except Exception as e:
+            logger.error(f"Error saving file to {file_path}: {str(e)}")
+            raise
+
+    def read_file(self, file_path: str) -> str:
+        """
+        Read a file from the testbed.
+
+        Args:
+            file_path (str): The path of the file to be read from the testbed.
+
+        Returns:
+            str: The content of the file.
+
+        Raises
+            Exception: If there's an error reading the file.
+        """
+        logger.info(f"Reading file from {file_path}")
+        try:
+            content = self.client.get_file(file_path)
+            if isinstance(content, dict) and 'error' in content:
+                raise Exception(f"Failed to read file: {content['error']}")
+            logger.info(f"File read successfully from {file_path}")
+            return content
+        except Exception as e:
+            logger.error(f"Error reading file from {file_path}: {str(e)}")
+            raise

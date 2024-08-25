@@ -8,14 +8,12 @@ from pathlib import Path
 from typing import Optional
 
 from testbed.swebench.constants import (
-    SWEbenchInstance,
     APPLY_PATCH_FAIL,
     APPLY_PATCH_PASS,
 )
 from testbed.container import Container
-from testbed.storage import Storage
 
-from testbed.schema import EvaluationResult, Prediction
+from testbed.schema import EvaluationResult, Prediction, SWEbenchInstance
 from testbed.swebench.grading import get_pred_report
 from testbed.swebench.test_spec import make_test_spec
 
@@ -56,14 +54,11 @@ def close_logger(logger):
 def run_instance(
     container: Container,
     instance: SWEbenchInstance,
-    pred: Prediction,
+    patch: str,
     log_dir: Path,
     timeout: int = 1800,
     shared_dir: Path = Path("/shared"),
 ) -> EvaluationResult:
-    if not pred.patch:
-        raise ValueError("Prediction patch is required")
-
     test_spec = make_test_spec(instance)
 
     # Set up logging directory
@@ -79,7 +74,7 @@ def run_instance(
     try:
         # Copy model prediction as patch file to container
         patch_file = shared_dir / "patch.diff"
-        patch_file.write_text(pred.patch)
+        patch_file.write_text(patch)
         file_logger.info(
             f"Intermediate patch for {instance_id} written to {patch_file}, now applying to container..."
         )
@@ -154,7 +149,6 @@ def run_instance(
         file_logger.info(f"Grading answer for {instance_id}...")
         result = get_pred_report(
             test_spec=test_spec,
-            prediction=pred,
             log_path=test_output_path,
             include_tests_status=True,
         )

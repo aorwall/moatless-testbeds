@@ -3,6 +3,7 @@ pydantic
 
 # Client
 jinja2
+datasets
 
 # Server
 flask

@@ -4,6 +4,7 @@ import os
 import shutil
 import tarfile
 from collections import namedtuple
+from datetime import datetime
 from pathlib import Path
 import threading
 import time
@@ -13,6 +14,7 @@ from kubernetes.client import ApiException
 from kubernetes.stream import stream
 
 from testbed.container.container import Container
+from testbed.schema import CommandStatusResponse
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +26,15 @@ class KubernetesContainer(Container):
         self,
         pod_name: str = os.getenv("POD_NAME"),
         namespace: str = os.getenv("KUBE_NAMESPACE", "testbeds"),
+        timeout: int = 1800,
     ):
         self.namespace = namespace
         self.container_name = "testbed"
         self.pod_name = pod_name
+        self.timeout = timeout
+        self.started_at = False
+
+        self.last_executed_commands = []
 
         # Load the kubeconfig
         try:
@@ -160,6 +167,42 @@ class KubernetesContainer(Container):
 
         raise Exception(f"Failed to execute command: {cmd}")
 
+    def exec_commands(self, commands: list[str]):
+        if self.is_executing():
+            raise Exception("Container is already running")
+
+        command_str = "#!/bin/bash\n" + "\n".join(commands)
+        self.write_to_shared_volume("commands.sh", command_str)
+        os.chmod("/shared/commands.sh", 0o755)  # rwxr-xr-x permissions
+
+        with open("/shared/cmd_output.txt", "w") as f:
+            f.write("")
+
+        if os.path.exists("/shared/complete_cmd"):
+            os.remove("/shared/complete_cmd")
+
+        # Trigger commands.sh script
+        with open("/shared/run_cmd", "w") as f:
+            pass  # Just create an empty file
+
+        self.started_at = datetime.now()
+        self.last_executed_commands = commands
+
+        logger.info("Triggered /shared/commands.sh execution")
+
+    def is_executing(self):
+        if not self.started_at:
+            return False
+
+        if os.path.exists("/shared/complete_cmd"):
+            self.started_at = None
+            return False
+
+        return True
+
+    def get_output(self) -> str:
+        return self.read_from_shared_volume("cmd_output.txt")
+
     def run_eval(self, test_output_path: Path, timeout: int = 1800):
         if os.path.exists(test_output_path):
             os.remove(test_output_path)
@@ -195,101 +238,19 @@ class KubernetesContainer(Container):
             pass
         logger.info("Kill command sent")
 
-    def copy_to_shared_drive(self, src: Path, dst: Path):
-        """
-        Copy a file from local to a docker container using a shared volume
-
-        Args:
-            src (Path): Source file path
-            dst (Path): Destination file path in the container
-        """
-
-        shared_volume_path = Path(
-            "/shared"
-        )  # Path where the shared volume is mounted in the container
-
-        # Check if destination path is valid
-        if os.path.dirname(dst) == "":
-            raise ValueError(
-                f"Destination path parent directory cannot be empty!, dst: {dst}"
-            )
-
-        # Copy the file to the shared volume
-        shared_src_path = shared_volume_path / src.name
-        with open(src, "rb") as src_file, open(shared_src_path, "wb") as dst_file:
-            dst_file.write(src_file.read())
-        logger.debug(f"File copied to shared volume at {shared_src_path}")
-
-        # Make directory in the container if necessary
-        self.exec_run(f"mkdir -p {dst.parent}")
-        logger.debug(f"Directory created at {dst.parent}")
-
-        # Move the file from the shared volume to the destination in the container
-        self.exec_run(f"mv {shared_src_path} {dst}")
-        logger.debug(f"File moved to container at {dst}")
-
-    def put_archive(self, path: str, data: bytes | io.BytesIO | str):
-        """
-        Insert a file or folder in this container using a tar archive as
-        source.
-
-        Args:
-            path (str): Path inside the container where the file(s) will be
-                extracted. Must exist.
-            data (bytes or stream): tar data to be extracted
-
-        Returns:
-            (bool): True if the call succeeds.
-        """
+    def read_from_shared_volume(self, filename: str) -> str:
+        shared_path = f"/shared/{filename}"
+        logger.info(f"Reading from shared volume: {shared_path}")
         try:
-            logger.info(f"Putting archive {path} with data length {len(data)}")
-            if isinstance(data, str):
-                data = data.encode("utf-8")
-
-            # Create a tar archive in memory
-            tar_stream = io.BytesIO()
-            with tarfile.open(fileobj=tar_stream, mode="w") as tar:
-                tarinfo = tarfile.TarInfo(name=os.path.basename(path))
-                tarinfo.size = len(data)
-                tar.addfile(tarinfo, io.BytesIO(data))
-            tar_stream.seek(0)
-
-            exec_command = ["tar", "xvf", "-", "-C", os.path.dirname(path)]
-
-            resp = stream(
-                self.core_v1.connect_get_namespaced_pod_exec,
-                self.pod_name,
-                self.namespace,
-                command=exec_command,
-                container=self.container_name,
-                stderr=True,
-                stdin=True,
-                stdout=True,
-                tty=False,
-                _preload_content=False,
-            )
-
-            # Stream the tar archive to the pod
-            while True:
-                chunk = tar_stream.read(1024)
-                if not chunk:
-                    break
-                resp.write_stdin(chunk)
-            resp.close()
-
-            return True
+            with open(shared_path, "r") as file:
+                data = file.read()
+            logger.info(f"Successfully read from {shared_path}")
+            return data
         except Exception as e:
-            logger.warning(f"Error: {e}")
-            return False
+            logger.exception(f"Error reading from disk")
+            return ""
 
     def write_to_shared_volume(self, filename: str, data: bytes | str):
-        """
-        Write data to a file in the shared volume.
-
-        Args:
-            filename (str): The name of the file in the shared volume.
-            data (bytes or str): The data to write to the file.
-        """
         shared_path = f"/shared/{filename}"
         logger.info(f"Writing to shared volume: {shared_path}")
         try:

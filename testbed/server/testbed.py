@@ -3,9 +3,10 @@ import logging
 import os
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from testbed.container.kubernetes import KubernetesContainer
-from testbed.schema import Prediction, EvaluationResult
+from testbed.schema import  EvaluationResult, SWEbenchInstance,  CommandStatusResponse
 from testbed.storage.azure_blob import AzureBlobStorage
 from testbed.swebench.run_evaluation import run_instance, EvaluationError
 
@@ -14,31 +15,36 @@ logger = logging.getLogger(__name__)
 
 
 class Testbed:
+
     def __init__(self, testbed_id: str):
         self.testbed_id = testbed_id
         logger.info(f"Initializing Testbed with ID: {testbed_id}")
         self.container = KubernetesContainer()
         self.storage = AzureBlobStorage()
+
         logger.info("Testbed initialization complete")
 
-    def run_evaluation(self, prediction: Prediction) -> EvaluationResult:
-        instance_file_path = os.getenv("CONFIG_FILE_PATH", "/etc/config/config.json")
-        logger.info(f"Reading instance from {instance_file_path}")
+    def run_commands(self, commands: list[str]):
+        self.container.exec_commands(commands)
+        # TODO: Check for errors
+        self.executing_commands = commands
 
-        if not os.path.exists(instance_file_path):
-            raise FileNotFoundError(f"Instance file not found at {instance_file_path}")
+    def get_run_status(self) -> CommandStatusResponse:
+        is_executing = self.container.is_executing()
+        output = self.container.get_output()
+        commands = self.container.last_executed_commands
 
-        with open(instance_file_path, "r") as f:
-            instance = json.load(f)
+        return CommandStatusResponse(is_executing=is_executing, commands=commands, output=output)
 
-        instance_id = instance["instance_id"]
-        remote_dir = f"{prediction.run_id}/{instance_id}"
+    def run_evaluation(self, instance: SWEbenchInstance, run_id: Optional[str] = None, patch: Optional[str] = None, timeout: int = 1800) -> EvaluationResult:
+        instance_id = instance.instance_id
+        run_id = run_id or uuid.uuid4().hex
 
-        if not prediction.patch:
-            prediction.patch = instance["patch"]
+        if not patch:
+            patch = instance.patch
             logger.info(f"Running evaluation with gold prediction")
 
-        log_dir = Path("/tmp/") / prediction.run_id / instance_id
+        log_dir = Path("/tmp/") / run_id / instance_id
 
         try:
             if not os.path.exists(log_dir):
@@ -56,9 +62,9 @@ class Testbed:
             report = run_instance(
                 container=self.container,
                 instance=instance,
-                pred=prediction,
+                patch=patch,
                 log_dir=log_dir,
-                timeout=1800,
+                timeout=timeout,
             )
 
             status = "resolved" if report.resolved else "failed"
@@ -72,7 +78,7 @@ class Testbed:
         finally:
             logger.info(f"Instance {instance_id} finished with status {status}")
             try:
-                remote_dir = f"{prediction.run_id}/{instance_id}"
+                remote_dir = f"{run_id}/{instance_id}"
                 self.storage.store_dir(local_dir=log_dir, remote_dir=remote_dir)
             except Exception as e:
                 logger.exception(f"Error uploading evaluation logs: {e}")

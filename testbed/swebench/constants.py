@@ -9,22 +9,6 @@ INSTANCE_IMAGE_BUILD_DIR = Path("image_build_logs/instances")
 RUN_INSTANCE_LOG_DIR = Path("run_instance_logs")
 
 
-# Constants - Task Instance Class
-class SWEbenchInstance(TypedDict):
-    repo: str
-    instance_id: str
-    base_commit: str
-    patch: str
-    test_patch: str
-    problem_statement: str
-    hints_text: str
-    created_at: str
-    version: str
-    FAIL_TO_PASS: str
-    PASS_TO_PASS: str
-    environment_setup_commit: str
-
-
 # Constants - Test Types, Statuses, Commands
 FAIL_TO_PASS = "FAIL_TO_PASS"
 FAIL_TO_FAIL = "FAIL_TO_FAIL"

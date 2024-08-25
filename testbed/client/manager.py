@@ -2,6 +2,7 @@ import asyncio
 import logging
 import random
 import string
+import sys
 import time
 import uuid
 from collections import namedtuple
@@ -57,7 +58,12 @@ high_cpu_instances = [
 
 
 class TestbedManager:
-    def __init__(self, namespace: str = KUBE_NAMESPACE, local_testing: bool = False):
+    def __init__(self, namespace: str = KUBE_NAMESPACE, local_testing: bool = True):
+        if local_testing:
+            config.load_kube_config()
+        else:
+            config.load_incluster_config()
+
         self.namespace = namespace
         self.container_name = "testbed"
 
@@ -112,17 +118,6 @@ class TestbedManager:
     ) -> CreateTestbedResponse:
         logger.info(f"create_testbed(user: {user_id}, instance_id: {instance_id})")
 
-        config_map_name = self._config_map_name(instance_id)
-        try:
-            self.core_v1.read_namespaced_config_map(
-                name=config_map_name, namespace=self.namespace
-            )
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                raise Exception(f"Instance ID {instance_id} not found.")
-            else:
-                raise
-
         try:
             testbed_id = self._generate_test_id(instance_id)
             job_manifest = self._create_job_manifest(
@@ -130,6 +125,7 @@ class TestbedManager:
             )
             service_manifest = self._create_service_manifest(testbed_id)
 
+            # Create job and service
             self.batch_v1.create_namespaced_job(
                 body=job_manifest, namespace=self.namespace
             )
@@ -151,6 +147,97 @@ class TestbedManager:
                 )
                 raise RuntimeError("Error creating job or service")
 
+    def wait_for_testbed_ready(self, testbed_id: str, timeout=300, interval=1):
+        start_time = time.time()
+        last_status = {}
+
+        def print_status(status, elapsed_time):
+            output = [
+                f"Testbed ID: {testbed_id}",
+                f"Pod Phase: {status['pod_phase']}",
+                f"External IP: {status['external_ip'] or 'Not assigned yet'}",
+                "Testbed Container:",
+                f"  Ready: {status['testbed_ready']}",
+                f"  State: {status['testbed_state']}",
+                "Sidecar Container:",
+                f"  Ready: {status['sidecar_ready']}",
+                f"  State: {status['sidecar_state']}",
+                f"\nWaiting for testbed to be ready... (Elapsed time: {int(elapsed_time)}s)",
+            ]
+            if status["testbed_reason"]:
+                output.insert(5, f"  Reason: {status['testbed_reason']}")
+            if status["sidecar_reason"]:
+                output.insert(-1, f"  Reason: {status['sidecar_reason']}")
+
+            if "IPython" in sys.modules:
+                from IPython.display import clear_output
+
+                clear_output(wait=True)
+                print("\n".join(output))
+            else:
+                logger.info("\n".join(output))
+
+        not_found_count = 0
+        while time.time() - start_time < timeout:
+            testbed = self.get_testbed(testbed_id)
+            if not testbed:
+                not_found_count += 1
+                if not_found_count > 10:
+                    raise TimeoutError(
+                        f"Testbed {testbed_id} not found after {timeout} seconds"
+                    )
+                current_status = {
+                    "pod_phase": "Not found",
+                    "external_ip": "Not found",
+                    "testbed_ready": False,
+                    "testbed_state": "Not found",
+                    "testbed_reason": "Not found",
+                    "sidecar_ready": False,
+                    "sidecar_state": "Not found",
+                    "sidecar_reason": "Not found",
+                }
+            else:
+                current_status = {
+                    "pod_phase": testbed.status.pod_phase,
+                    "external_ip": testbed.external_ip,
+                    "testbed_ready": testbed.status.testbed.ready,
+                    "testbed_state": testbed.status.testbed.state,
+                    "testbed_reason": testbed.status.testbed.reason,
+                    "sidecar_ready": testbed.status.sidecar.ready,
+                    "sidecar_state": testbed.status.sidecar.state,
+                    "sidecar_reason": testbed.status.sidecar.reason,
+                }
+
+            if current_status != last_status:
+                print_status(current_status, time.time() - start_time)
+                last_status = current_status
+
+            if (
+                    current_status["pod_phase"] == "Running"
+                    and current_status["external_ip"]
+                    and current_status["testbed_ready"]
+                    and current_status["sidecar_ready"]
+            ):
+                finish_text = f"Testbed {testbed_id} is ready and can be reached on http://{current_status['external_ip']}:8000!"
+                if "IPython" in sys.modules:
+                    from IPython.display import clear_output
+                    print(finish_text)
+                else:
+                    logger.info(finish_text)
+                return testbed
+
+            time.sleep(interval)
+
+        if "IPython" in sys.modules:
+            print(
+                f"\nTimeout reached. Testbed {testbed_id} is not fully ready after {timeout} seconds."
+            )
+        else:
+            logger.error(
+                f"\nTimeout reached. Testbed {testbed_id} is not fully ready after {timeout} seconds."
+            )
+        return None
+
     def create_client(self, testbed_id: str, timeout: float = 30) -> TestbedClient:
         start_time = time.time()
         while time.time() - start_time < timeout:
@@ -164,9 +251,13 @@ class TestbedManager:
                 and testbed.status.sidecar.state == "running"
                 and testbed.external_ip
             ):
-                return TestbedClient(
+                client = TestbedClient(
                     testbed_id=testbed_id, host=testbed.external_ip, port=8000
                 )
+                logger.info(f"Health checking client")
+                assert client.check_health(timeout=120), f"Health check on testbed failed"
+                logger.info(f"Health check successful, client ready")
+                return client
             else:
                 logger.debug(
                     f"Testbed {testbed_id} not ready yet. Status: {testbed.status}"
@@ -384,3 +475,10 @@ class TestbedManager:
         }
         manifest_yaml = self.service_template.render(context)
         return yaml.safe_load(manifest_yaml)
+
+    def find_testbed_by_instance_id(self, instance_id: str) -> Optional[TestbedDetailed]:
+        job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
+        for job in job_list.items:
+            if job.metadata.labels.get("instance-id") == instance_id:
+                return self.get_testbed(job.metadata.name)
+        return None

@@ -1,7 +1,34 @@
 from datetime import datetime
 from typing import Optional, Literal, Dict, List, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class SWEbenchInstance(BaseModel):
+    repo: str
+    instance_id: str
+    base_commit: str
+    patch: str
+    test_patch: str
+    problem_statement: str
+    hints_text: Optional[str] = None
+    created_at: str
+    version: str
+    fail_to_pass: list[str]
+    pass_to_pass: list[str]
+    environment_setup_commit: str
+
+    @classmethod
+    @model_validator(mode="before")
+    def validate_test_lists(cls, obj: Any):
+        print("validate_test_lists")
+        print(obj)
+        if isinstance(obj, dict):
+            if 'FAIL_TO_PASS' in obj and isinstance(obj['FAIL_TO_PASS'], str):
+                obj['fail_to_pass'] = eval(obj['FAIL_TO_PASS'])
+            if 'PASS_TO_PASS' in obj and isinstance(obj['PASS_TO_PASS'], str):
+                obj['pass_to_pass'] = eval(obj['PASS_TO_PASS'])
+        return obj
 
 
 class Prediction(BaseModel):
@@ -11,6 +38,29 @@ class Prediction(BaseModel):
         default=None,
         description="The patch to apply to the instance, will run gold patch if not provided",
     )
+
+
+class RunEvaluationRequest(BaseModel):
+    run_id: Optional[str] = Field(
+        default=None,
+        description="The run ID to evaluate"
+    )
+    instance: SWEbenchInstance = Field(..., description="The SWE-bench instance to evaluate")
+    patch: Optional[str] = Field(
+        default=None,
+        description="The patch to apply to the instance, will run gold patch if not provided",
+    )
+    timeout: int = 1800
+
+
+class RunCommandsRequest(BaseModel):
+    commands: list[str]
+
+
+class CommandStatusResponse(BaseModel):
+    is_executing: bool
+    commands: list[str] = Field(default_factory=list)
+    output: Optional[str] = None
 
 
 class TestResult(BaseModel):
@@ -26,6 +76,7 @@ class TestsStatus(BaseModel):
 
 
 class EvaluationResult(BaseModel):
+    run_id: str
     instance_id: str
     patch_applied: bool = False
     resolved: bool = False

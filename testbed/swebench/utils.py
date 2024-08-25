@@ -1,8 +1,13 @@
+import json
 import re
 from argparse import ArgumentTypeError
+from pathlib import Path
+from typing import cast, Optional
 
+from datasets import Dataset, load_dataset
+
+from testbed.schema import SWEbenchInstance
 from testbed.swebench.constants import (
-    SWEbenchInstance,
     NON_TEST_EXTS,
 )
 
@@ -16,6 +21,46 @@ PATCH_HUNK_PATTERN = re.compile(
     r"\@\@\s+\-(\d+),(\d+)\s+\+(\d+),(\d+)\s+\@\@(.+?)(?=diff\ |\-\-\-\ a\/|\@\@\ \-|\Z)",
     re.DOTALL,
 )
+
+
+def load_swebench_instance(instance_id: str, name="princeton-nlp/SWE-bench", split="test") -> Optional[SWEbenchInstance]:
+    if name.lower() in {"swe-bench", "swebench", "swe_be"}:
+        name = "princeton-nlp/SWE-bench"
+    elif name.lower() in {"swe-bench-lite", "swebench-lite", "swe_bench_lite", "swe-bench_lite", "lite"}:
+        name = "princeton-nlp/SWE-bench_Lite"
+    dataset = cast(Dataset, load_dataset(name, split=split))
+
+    for instance in dataset:
+        if instance["instance_id"] == instance_id:
+            if 'FAIL_TO_PASS' in instance and isinstance(instance['FAIL_TO_PASS'], str):
+                instance['fail_to_pass'] = eval(instance['FAIL_TO_PASS'])
+                del instance['FAIL_TO_PASS']
+            if 'PASS_TO_PASS' in instance and isinstance(instance['PASS_TO_PASS'], str):
+                instance['pass_to_pass'] = eval(instance['PASS_TO_PASS'])
+                del instance['PASS_TO_PASS']
+            return SWEbenchInstance(**instance)
+
+    return None
+
+
+def load_swebench_dataset(name="princeton-nlp/SWE-bench", split="test") -> list[SWEbenchInstance]:
+    """
+    Load SWE-bench dataset from Hugging Face Datasets or local .json/.jsonl file
+    """
+    # Load from local .json/.jsonl file
+    if name.endswith(".json") or name.endswith(".jsonl"):
+        return [
+            SWEbenchInstance.model_validate(instance)
+            for instance in json.loads(Path(name).read_text())
+        ]
+
+    # Load from Hugging Face Datasets
+    if name.lower() in {"swe-bench", "swebench", "swe_bench"}:
+        name = "princeton-nlp/SWE-bench"
+    elif name.lower() in {"swe-bench-lite", "swebench-lite", "swe_bench_lite", "swe-bench_lite", "lite"}:
+        name = "princeton-nlp/SWE-bench_Lite"
+    dataset = cast(Dataset, load_dataset(name, split=split))
+    return [SWEbenchInstance.model_validate(instance) for instance in dataset]
 
 
 def get_first_idx(charlist):
@@ -133,20 +178,17 @@ def get_test_directives(instance: SWEbenchInstance) -> list:
     Returns:
         directives (list): List of test directives
     """
-    # For seq2seq code repos, testing command is fixed
-    if instance["repo"] == "swe-bench/humaneval":
-        return ["test.py"]
 
     # Get test directives from test patch and remove non-test files
     diff_pat = r"diff --git a/.* b/(.*)"
-    test_patch = instance["test_patch"]
+    test_patch = instance.test_patch
     directives = re.findall(diff_pat, test_patch)
     directives = [
         d for d in directives if not any(d.endswith(ext) for ext in NON_TEST_EXTS)
     ]
 
     # For Django tests, remove extension + "tests/" prefix and convert slashes to dots (module referencing)
-    if instance["repo"] == "django/django":
+    if instance.repo == "django/django":
         directives_transformed = []
         for d in directives:
             d = d[: -len(".py")] if d.endswith(".py") else d

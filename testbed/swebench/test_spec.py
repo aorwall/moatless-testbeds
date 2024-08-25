@@ -5,8 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Union
 
+from testbed.schema import SWEbenchInstance
 from testbed.swebench.constants import (
-    SWEbenchInstance,
     MAP_REPO_TO_INSTALL,
     MAP_REPO_VERSION_TO_SPECS,
     USE_X86,
@@ -25,8 +25,8 @@ class TestSpec:
     instance_id: str
     repo: str
     version: str
-    repo_script_list: str
-    eval_script_list: str
+    repo_script_list: list[str]
+    eval_script_list: list[str]
     arch: str
     FAIL_TO_PASS: list[str]
     PASS_TO_PASS: list[str]
@@ -83,17 +83,6 @@ class TestSpec:
             raise ValueError(f"Invalid architecture: {self.arch}")
 
 
-def get_test_specs_from_dataset(
-    dataset: Union[list[SWEbenchInstance], list[TestSpec]],
-) -> list[TestSpec]:
-    """
-    Idempotent function that converts a list of SWEbenchInstance objects to a list of TestSpec objects.
-    """
-    if isinstance(dataset[0], TestSpec):
-        return dataset
-    return list(map(make_test_spec, dataset))
-
-
 def make_repo_script_list(specs, repo, repo_directory, base_commit, env_name):
     """
     Create a list of bash commands to set up the repository for testing.
@@ -122,6 +111,60 @@ def make_repo_script_list(specs, repo, repo_directory, base_commit, env_name):
     if "install" in specs:
         setup_commands.append(specs["install"])
     return setup_commands
+
+def make_env_setup_script_list(instance: SWEbenchInstance) -> list[str]:
+    env_name = "testbed"
+    repo_directory = f"/{env_name}"
+    specs = MAP_REPO_VERSION_TO_SPECS[instance.repo][instance.version]
+    base_commit = instance.base_commit
+
+    eval_commands = [
+        f"source /opt/miniconda3/bin/activate",
+        f"conda activate {env_name}",
+        f"cd {repo_directory}",
+    ]
+    if "eval_commands" in specs:
+        eval_commands += specs["eval_commands"]
+    eval_commands += [
+        f"git config --global --add safe.directory {repo_directory}",  # for nonroot user
+        f"cd {repo_directory}",
+        # This is just informational, so we have a record
+        f"git status",
+        f"git show",
+        f"git diff {base_commit}",
+        "source /opt/miniconda3/bin/activate",
+        f"conda activate {env_name}",
+    ]
+    if "install" in specs:
+        eval_commands.append(specs["install"])
+    return eval_commands
+
+
+def get_test_command(instance: SWEbenchInstance):
+    return " ".join(
+        [
+            MAP_REPO_VERSION_TO_SPECS[instance.repo][instance.version][
+                "test_cmd"
+            ],
+            *get_test_directives(instance),
+        ]
+    )
+
+def get_evaluation_commands(instance: SWEbenchInstance):
+    test_files = re.findall(DIFF_MODIFIED_FILE_REGEX, instance.test_patch)
+    reset_tests_command = f"git checkout {instance.base_commit} {' '.join(test_files)}"
+    HEREDOC_DELIMITER = "EOF_114329324912"
+
+    apply_test_patch_command = (
+        f"git apply -v - <<'{HEREDOC_DELIMITER}'\n{instance.test_patch}\n{HEREDOC_DELIMITER}"
+    )
+
+    return [
+        f"git checkout {instance.base_commit} {' '.join(test_files)}",
+        # apply_test_patch_command,
+        get_test_command(instance),
+        reset_tests_command,  # Revert tests after done, leave the repo in the same state as before
+    ]
 
 
 def make_eval_script_list(
@@ -178,63 +221,29 @@ def make_eval_script_list(
 def make_test_spec(instance: SWEbenchInstance) -> TestSpec:
     if isinstance(instance, TestSpec):
         return instance
-    instance_id = instance["instance_id"]
-    repo = instance["repo"]
-    version = instance["version"]
-    base_commit = instance["base_commit"]
-    problem_statement = instance["problem_statement"]
-    hints_text = instance["hints_text"]  # Unused
-    test_patch = instance["test_patch"]
-    if instance_id == "sympy__sympy-13146":
-        test_patch = """diff --git a/sympy/core/tests/test_evalf.py b/sympy/core/tests/test_evalf.py
-index b7cb7abc08..014707aace 100644
---- a/sympy/core/tests/test_evalf.py
-+++ b/sympy/core/tests/test_evalf.py
-@@ -225,7 +225,9 @@ def test_evalf_bugs():
-
-     #issue 5412
-     assert ((oo*I).n() == S.Infinity*I)
--    assert ((oo+oo*I).n() == S.Infinity + S.Infinity*I)
-+
-+    #issue 11518
-+    assert NS(2*x**2.5, 5) == '2.0000*x**2.5000'
-
-
- def test_evalf_integer_parts():
-        """
-
-    def _from_json_or_obj(key: str) -> Any:
-        """If key points to string, load with json"""
-        if isinstance(instance[key], str):
-            return json.loads(instance[key])
-        return instance[key]
-
-    pass_to_pass = _from_json_or_obj("PASS_TO_PASS")
-    fail_to_pass = _from_json_or_obj("FAIL_TO_PASS")
-
     env_name = "testbed"
     repo_directory = f"/{env_name}"
-    specs = MAP_REPO_VERSION_TO_SPECS[repo][version]
+    specs = MAP_REPO_VERSION_TO_SPECS[instance.repo][instance.version]
 
     repo_script_list = make_repo_script_list(
-        specs, repo, repo_directory, base_commit, env_name
+        specs, instance.repo, repo_directory, instance.base_commit, env_name
     )
     eval_script_list = make_eval_script_list(
-        instance, specs, env_name, repo_directory, base_commit, test_patch
+        instance, specs, env_name, repo_directory, instance.base_commit, instance.test_patch
     )
     if platform.machine() in {"aarch64", "arm64"}:
         # use arm64 unless explicitly specified
-        arch = "arm64" if instance_id not in USE_X86 else "x86_64"
+        arch = "arm64" if instance.instance_id not in USE_X86 else "x86_64"
     else:
         arch = "x86_64"
 
     return TestSpec(
-        instance_id=instance_id,
-        repo=repo,
+        instance_id=instance.instance_id,
+        repo=instance.repo,
         repo_script_list=repo_script_list,
         eval_script_list=eval_script_list,
-        version=version,
+        version=instance.version,
         arch=arch,
-        FAIL_TO_PASS=fail_to_pass,
-        PASS_TO_PASS=pass_to_pass,
+        FAIL_TO_PASS=instance.fail_to_pass,
+        PASS_TO_PASS=instance.pass_to_pass,
     )

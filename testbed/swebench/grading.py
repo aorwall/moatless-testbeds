@@ -48,11 +48,12 @@ def test_failed(case: str, sm: dict[str, str]) -> bool:
     )
 
 
-def get_logs_eval(log_fp: str) -> tuple[dict[str, str], bool]:
+def get_logs_eval(repo: str, log_fp: Path) -> tuple[dict[str, str], bool]:
     """
     Retrieve evaluation results for a task instance from its corresponding log file
 
     Args:
+        repo (str): repository name
         log_fp (str): path to log file
     Returns:
         bool: whether the patch applied successfully
@@ -60,11 +61,6 @@ def get_logs_eval(log_fp: str) -> tuple[dict[str, str], bool]:
 
     TODO(john-b-yang): Check this is working properly...
     """
-    # Convert e.g. "logs/scikit-learn__scikit-learn-12421/test_output.txt" to "scikit-learn/scikit-learn"
-    sample_id = str(Path(log_fp).parent.stem)  # e.g. scikit-learn__scikit-learn-12421
-    repo = "-".join(
-        sample_id.replace("__", "/").split("-")[:-1]
-    )  # e.g. scikit-learn/scikit-learn
     log_parser = MAP_REPO_TO_PARSER[repo]
 
     if not os.path.exists(log_fp):
@@ -230,8 +226,7 @@ def get_resolution_status(report: dict[str, dict[str, Any]]) -> str:
 
 def get_pred_report(
     test_spec: TestSpec,
-    prediction: Prediction,
-    log_path: str,
+    log_path: Path,
     include_tests_status: bool,
 ) -> EvaluationResult:
     """
@@ -240,23 +235,20 @@ def get_pred_report(
 
     Args:
         test_spec (TestSpec): test spec containing keys "instance_id", "FAIL_TO_PASS", and "PASS
-        prediction (Prediction): prediction containing keys "instance_id", "model_name_or_path", and "model_patch"
+        instance_id (str): instance ID
         log_path (str): path to evaluation log
         include_tests_status (bool): whether to include the status of each test in the returned report
     Returns:
         report (EvaluationResult): report of metrics
     """
-    instance_id = prediction.instance_id
-    result = EvaluationResult(instance_id=instance_id)
-
-    if prediction.patch is None:
-        return result
+    result = EvaluationResult(test_spec=test_spec, instance_id=test_spec.instance_id)
 
     # Get evaluation logs
-    eval_sm, found = get_logs_eval(log_path)
+    eval_sm, found = get_logs_eval(test_spec.repo, log_path)
 
     if not found:
         return result
+
     result.patch_applied = True
 
     eval_ref = {

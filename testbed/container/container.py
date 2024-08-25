@@ -1,8 +1,4 @@
-import io
 import logging
-import os
-import shutil
-import tarfile
 from abc import ABC, abstractmethod
 from collections import namedtuple
 from pathlib import Path

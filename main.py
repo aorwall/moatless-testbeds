@@ -2,7 +2,7 @@ import os
 from kubernetes import config, client
 import logging
 from gunicorn.app.base import BaseApplication
-from testbed.server.server import app
+from testbed.server.server import create_app
 
 logger = logging.getLogger(__name__)
 
@@ -69,4 +69,5 @@ if __name__ == "__main__":
         "keepalive": 120,
     }
 
+    app = create_app()
     StandaloneApplication(app, options).run()
