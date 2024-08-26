@@ -132,7 +132,7 @@ def run_instance(
 
         try:
             # Get git diff after running eval script
-            git_diff_output_after = container.exec_run("git diff").output.strip()
+            git_diff_output_after = container.execute("git diff").output.strip()
 
             # Check if git diff changed after running eval script
             file_logger.info(f"Git diff after:\n{git_diff_output_after}")

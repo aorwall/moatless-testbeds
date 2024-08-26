@@ -23,27 +23,37 @@ PATCH_HUNK_PATTERN = re.compile(
 )
 
 
-def load_swebench_instance(instance_id: str, name="princeton-nlp/SWE-bench", split="test") -> Optional[SWEbenchInstance]:
+def load_swebench_instance(
+    instance_id: str, name="princeton-nlp/SWE-bench", split="test"
+) -> Optional[SWEbenchInstance]:
     if name.lower() in {"swe-bench", "swebench", "swe_be"}:
         name = "princeton-nlp/SWE-bench"
-    elif name.lower() in {"swe-bench-lite", "swebench-lite", "swe_bench_lite", "swe-bench_lite", "lite"}:
+    elif name.lower() in {
+        "swe-bench-lite",
+        "swebench-lite",
+        "swe_bench_lite",
+        "swe-bench_lite",
+        "lite",
+    }:
         name = "princeton-nlp/SWE-bench_Lite"
     dataset = cast(Dataset, load_dataset(name, split=split))
 
     for instance in dataset:
         if instance["instance_id"] == instance_id:
-            if 'FAIL_TO_PASS' in instance and isinstance(instance['FAIL_TO_PASS'], str):
-                instance['fail_to_pass'] = eval(instance['FAIL_TO_PASS'])
-                del instance['FAIL_TO_PASS']
-            if 'PASS_TO_PASS' in instance and isinstance(instance['PASS_TO_PASS'], str):
-                instance['pass_to_pass'] = eval(instance['PASS_TO_PASS'])
-                del instance['PASS_TO_PASS']
+            if "FAIL_TO_PASS" in instance and isinstance(instance["FAIL_TO_PASS"], str):
+                instance["fail_to_pass"] = eval(instance["FAIL_TO_PASS"])
+                del instance["FAIL_TO_PASS"]
+            if "PASS_TO_PASS" in instance and isinstance(instance["PASS_TO_PASS"], str):
+                instance["pass_to_pass"] = eval(instance["PASS_TO_PASS"])
+                del instance["PASS_TO_PASS"]
             return SWEbenchInstance(**instance)
 
     return None
 
 
-def load_swebench_dataset(name="princeton-nlp/SWE-bench", split="test") -> list[SWEbenchInstance]:
+def load_swebench_dataset(
+    name="princeton-nlp/SWE-bench", split="test"
+) -> list[SWEbenchInstance]:
     """
     Load SWE-bench dataset from Hugging Face Datasets or local .json/.jsonl file
     """
@@ -57,10 +67,29 @@ def load_swebench_dataset(name="princeton-nlp/SWE-bench", split="test") -> list[
     # Load from Hugging Face Datasets
     if name.lower() in {"swe-bench", "swebench", "swe_bench"}:
         name = "princeton-nlp/SWE-bench"
-    elif name.lower() in {"swe-bench-lite", "swebench-lite", "swe_bench_lite", "swe-bench_lite", "lite"}:
+    elif name.lower() in {
+        "swe-bench-lite",
+        "swebench-lite",
+        "swe_bench_lite",
+        "swe-bench_lite",
+        "lite",
+    }:
         name = "princeton-nlp/SWE-bench_Lite"
     dataset = cast(Dataset, load_dataset(name, split=split))
-    return [SWEbenchInstance.model_validate(instance) for instance in dataset]
+
+    instances = []
+    for instance in dataset:
+        if "FAIL_TO_PASS" in instance and isinstance(instance["FAIL_TO_PASS"], str):
+            instance["fail_to_pass"] = eval(instance["FAIL_TO_PASS"])
+            del instance["FAIL_TO_PASS"]
+        if "PASS_TO_PASS" in instance and isinstance(instance["PASS_TO_PASS"], str):
+            instance["pass_to_pass"] = eval(instance["PASS_TO_PASS"])
+            del instance["PASS_TO_PASS"]
+
+        instances.append(SWEbenchInstance(**instance))
+
+    return instances
+
 
 
 def get_first_idx(charlist):

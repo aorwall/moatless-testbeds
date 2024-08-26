@@ -8,13 +8,21 @@ from datetime import datetime
 from pathlib import Path
 import threading
 import time
+import uuid
+import base64
+from typing import List
 
 from kubernetes import client, config
 from kubernetes.client import ApiException
 from kubernetes.stream import stream
+from kubernetes import config as k8s_config
 
 from testbed.container.container import Container
-from testbed.schema import CommandStatusResponse
+from testbed.schema import (
+    CommandStatusResponse,
+    CommandExecutionResponse,
+    CommandExecutionSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +35,24 @@ class KubernetesContainer(Container):
         pod_name: str = os.getenv("POD_NAME"),
         namespace: str = os.getenv("KUBE_NAMESPACE", "testbeds"),
         timeout: int = 1800,
+        shared_dir: str = "/shared",
     ):
+        try:
+            k8s_config.load_incluster_config()
+            logger.info("Loaded in-cluster Kubernetes configuration")
+        except k8s_config.ConfigException:
+            try:
+                k8s_config.load_kube_config()
+                logger.info("Loaded Kubernetes configuration from default location")
+            except k8s_config.ConfigException:
+                logger.error("Could not load Kubernetes configuration")
+
         self.namespace = namespace
         self.container_name = "testbed"
         self.pod_name = pod_name
         self.timeout = timeout
         self.started_at = False
+        self.shared_dir = shared_dir
 
         self.last_executed_commands = []
 
@@ -62,7 +82,7 @@ class KubernetesContainer(Container):
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
-                result = self.exec_run(
+                result = self._exec(
                     "echo 'Container is reachable'", timeout=5, retries=1
                 )
                 if result.exit_code == 0 and "Container is reachable" in result.output:
@@ -94,7 +114,7 @@ class KubernetesContainer(Container):
             logger.error(f"Error checking pod readiness: {e}")
             return False
 
-    def exec_run(
+    def _exec(
         self, cmd: str, timeout: int | None = None, retries: int = 3, delay: int = 2
     ) -> ExecResult:
         logger.debug(
@@ -167,34 +187,105 @@ class KubernetesContainer(Container):
 
         raise Exception(f"Failed to execute command: {cmd}")
 
-    def exec_commands(self, commands: list[str]):
-        if self.is_executing():
-            raise Exception("Container is already running")
+    def execute(
+        self, commands: list[str], timeout: int = 60
+    ) -> CommandExecutionResponse:
+        execution_id = str(uuid.uuid4())
+        commands_file = f"/tmp/{execution_id}_cmd.sh"
 
-        command_str = "#!/bin/bash\n" + "\n".join(commands)
-        self.write_to_shared_volume("commands.sh", command_str)
-        os.chmod("/shared/commands.sh", 0o755)  # rwxr-xr-x permissions
+        # Create a shell script with the commands
+        script_content = "#!/bin/bash\n" + "\n".join(commands)
+        self.write_file(commands_file, script_content.encode("utf-8"))
 
-        with open("/shared/cmd_output.txt", "w") as f:
-            f.write("")
+        # Make the script executable
+        self._exec(f"chmod +x {commands_file}")
 
-        if os.path.exists("/shared/complete_cmd"):
-            os.remove("/shared/complete_cmd")
+        try:
+            # Execute the script with the built-in timeout
+            result = stream(
+                self.core_v1.connect_get_namespaced_pod_exec,
+                self.pod_name,
+                self.namespace,
+                container=self.container_name,
+                command=["/bin/bash", commands_file],
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+                _preload_content=False,
+                _request_timeout=timeout,
+            )
 
-        # Trigger commands.sh script
-        with open("/shared/run_cmd", "w") as f:
-            pass  # Just create an empty file
+            output = ""
+            while result.is_open():
+                result.update(timeout=1)
+                if result.peek_stdout():
+                    output += result.read_stdout()
+                if result.peek_stderr():
+                    output += result.read_stderr()
 
-        self.started_at = datetime.now()
-        self.last_executed_commands = commands
+            status = "completed"
+        except Exception as e:
+            logger.error(f"Command execution failed or timed out: {str(e)}")
+            output = f"Error: {str(e)}"
+            status = "failed"
 
-        logger.info("Triggered /shared/commands.sh execution")
+        # Clean up the temporary script
+        self._exec(f"rm {commands_file}")
+
+        return CommandExecutionResponse(
+            execution_id=execution_id,
+            status=status,
+            output=output,
+        )
+
+    def get_execution_status(self, execution_id: str) -> CommandExecutionResponse:
+        complete_file = os.path.join(self.shared_dir, f"{execution_id}_complete.txt")
+        output_file = os.path.join(self.shared_dir, f"{execution_id}_output.txt")
+
+        if os.path.exists(complete_file):
+            status = "completed"
+        else:
+            status = "running"
+
+        return CommandExecutionResponse(
+            execution_id=execution_id,
+            status=status,
+            output=self.read_from_shared_volume(f"{execution_id}_output.txt"),
+        )
+
+    def list_executed_commands(self) -> List[CommandExecutionSummary]:
+        commands_dir = os.path.join(self.shared_dir, "commands")
+        summaries = []
+
+        for filename in os.listdir(commands_dir):
+            if filename.endswith("_cmd.txt"):
+                execution_id = filename.split("_")[0]
+                complete_file = os.path.join(
+                    commands_dir, f"{execution_id}_complete.txt"
+                )
+                output_file = os.path.join(commands_dir, f"{execution_id}_output.txt")
+
+                status = "completed" if os.path.exists(complete_file) else "running"
+
+                with open(os.path.join(commands_dir, filename), "r") as cmd_file:
+                    commands = cmd_file.read().splitlines()
+
+                summary = CommandExecutionSummary(
+                    execution_id=execution_id,
+                    status=status,
+                    commands=commands,
+                    output_file=output_file,
+                )
+                summaries.append(summary)
+
+        return summaries
 
     def is_executing(self):
         if not self.started_at:
             return False
 
-        if os.path.exists("/shared/complete_cmd"):
+        if os.path.exists(os.path.join(self.shared_dir, "complete_cmd")):
             self.started_at = None
             return False
 
@@ -203,43 +294,8 @@ class KubernetesContainer(Container):
     def get_output(self) -> str:
         return self.read_from_shared_volume("cmd_output.txt")
 
-    def run_eval(self, test_output_path: Path, timeout: int = 1800):
-        if os.path.exists(test_output_path):
-            os.remove(test_output_path)
-
-        # Trigger the eval script
-        with open("/shared/run_eval", "w") as f:
-            pass  # Just create an empty file
-
-        logger.info("Triggered /shared/eval.sh execution")
-
-        start_time = time.time()
-
-        while not os.path.exists("/shared/eval_complete"):
-            if time.time() - start_time > timeout:
-                with open(test_output_path, "a") as f:
-                    f.write(f"\n\nTimeout error: {timeout} seconds exceeded.")
-
-                logger.warning(
-                    f"Evaluation timed out after {time.time() - start_time} seconds"
-                )
-                raise TimeoutError("Evaluation timed out")
-            time.sleep(1)
-
-        logger.info(
-            f"Evaluation completed after {time.time() - start_time} seconds. Move test output to {test_output_path}"
-        )
-        shutil.move("/shared/test_output.txt", test_output_path)
-
-        os.remove("/shared/eval_complete")
-
-    def kill(self):
-        with open("/shared/kill", "w") as f:
-            pass
-        logger.info("Kill command sent")
-
     def read_from_shared_volume(self, filename: str) -> str:
-        shared_path = f"/shared/{filename}"
+        shared_path = os.path.join(self.shared_dir, filename)
         logger.info(f"Reading from shared volume: {shared_path}")
         try:
             with open(shared_path, "r") as file:
@@ -251,9 +307,10 @@ class KubernetesContainer(Container):
             return ""
 
     def write_to_shared_volume(self, filename: str, data: bytes | str):
-        shared_path = f"/shared/{filename}"
+        shared_path = os.path.join(self.shared_dir, filename)
         logger.info(f"Writing to shared volume: {shared_path}")
         try:
+            os.makedirs(os.path.dirname(shared_path), exist_ok=True)
             if isinstance(data, str):
                 data = data.encode("utf-8")
             with open(shared_path, "wb") as file:
@@ -261,3 +318,74 @@ class KubernetesContainer(Container):
             logger.info(f"Successfully wrote to {shared_path}")
         except Exception as e:
             logger.exception(f"Error writing to disk")
+
+    def write_file(self, file_path: str, content: bytes):
+        logger.info(f"Writing file: {file_path}")
+        try:
+            if file_path.startswith(self.shared_dir):
+                # If the file is in the shared directory, write directly to disk
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                with open(file_path, "wb") as file:
+                    file.write(content)
+                logger.info(f"Successfully wrote file to shared volume: {file_path}")
+            else:
+                # For files outside the shared directory, use the existing method
+                encoded_content = base64.b64encode(content).decode("utf-8")
+                exec_command = [
+                    "sh",
+                    "-c",
+                    f"mkdir -p $(dirname {file_path}) && echo '{encoded_content}' | base64 -d > {file_path} && cat {file_path} | base64",
+                ]
+                resp = stream(
+                    self.core_v1.connect_get_namespaced_pod_exec,
+                    self.pod_name,
+                    self.namespace,
+                    container=self.container_name,
+                    command=exec_command,
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False,
+                )
+
+                # Decode the response and compare with original content
+                written_content = base64.b64decode(resp.strip())
+                if written_content != content:
+                    raise Exception("Written content does not match original content")
+
+                logger.info(
+                    f"Successfully wrote and verified file in testbed container: {file_path}"
+                )
+        except Exception as e:
+            logger.exception(f"Error writing file: {file_path}")
+            raise
+
+    def read_file(self, file_path: str) -> str:
+        logger.info(f"Reading file from testbed container: {file_path}")
+        try:
+            exec_command = ["cat", file_path]
+            resp = stream(
+                self.core_v1.connect_get_namespaced_pod_exec,
+                self.pod_name,
+                self.namespace,
+                container=self.container_name,
+                command=exec_command,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"Successfully read file from testbed container: {file_path}")
+            return resp
+        except Exception as e:
+            logger.exception(f"Error reading file from testbed container: {file_path}")
+            raise
+
+    def kill(self):
+        logger.info(f"Killing pod {self.pod_name} in namespace {self.namespace}")
+        try:
+            self.write_to_shared_volume("kill", "")
+
+        except ApiException as e:
+            logger.error(f"Error killing pod {self.pod_name}: {e}")
+            raise

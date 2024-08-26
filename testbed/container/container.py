@@ -2,6 +2,9 @@ import logging
 from abc import ABC, abstractmethod
 from collections import namedtuple
 from pathlib import Path
+from typing import List
+
+from testbed.schema import CommandExecutionResponse, CommandExecutionSummary
 
 logger = logging.getLogger(__name__)
 
@@ -23,31 +26,85 @@ class Container(ABC):
         pass
 
     @abstractmethod
-    def exec_run(
-        self, cmd: str, timeout: int | None = None, retries: int = 3, delay: int = 2
-    ) -> ExecResult:
+    def execute(
+        self, commands: list[str], timeout: int = 60
+    ) -> CommandExecutionResponse:
         """
-        Execute a command in the container with retries.
+        Execute a list of commands in the container.
 
         Args:
-            cmd (str): Command to execute.
-            timeout (int | None): Maximum time to wait for a response, in seconds.
-            retries (int): Number of retry attempts.
-            delay (int): Delay between retries, in seconds.
+            commands (list[str]): List of commands to execute.
+            timeout (int): Maximum time to wait for execution to complete, in seconds.
 
         Returns:
-            ExecResult: Result of the command execution.
+            CommandExecutionResponse: Response containing execution details.
         """
         pass
 
     @abstractmethod
-    def run_eval(self, test_output_path: Path, timeout: int = 1800):
+    def get_execution_status(self, execution_id: str) -> CommandExecutionResponse:
         """
-        Run the evaluation script in the container.
+        Get the status of a previously executed command.
 
         Args:
-            test_output_path (Path): Path to the test output file.
-            timeout (int): Maximum time to wait for the evaluation to complete, in seconds.
+            execution_id (str): Unique identifier for the execution.
+
+        Returns:
+            CommandExecutionResponse: Response containing execution status and details.
+        """
+        pass
+
+    @abstractmethod
+    def list_executed_commands(self) -> List[CommandExecutionSummary]:
+        """
+        List all previously executed commands.
+
+        Returns:
+            List[CommandExecutionSummary]: List of summaries for executed commands.
+        """
+        pass
+
+    @abstractmethod
+    def is_executing(self) -> bool:
+        """
+        Check if the container is currently executing a command.
+
+        Returns:
+            bool: True if a command is being executed, False otherwise.
+        """
+        pass
+
+    @abstractmethod
+    def get_output(self) -> str:
+        """
+        Get the output of the last executed command.
+
+        Returns:
+            str: Output of the last executed command.
+        """
+        pass
+
+    @abstractmethod
+    def write_file(self, file_path: str, content: bytes):
+        """
+        Write content to a file in the container.
+
+        Args:
+            file_path (str): Path to the file in the container.
+            content (bytes): Content to write to the file.
+        """
+        pass
+
+    @abstractmethod
+    def read_file(self, file_path: str) -> str:
+        """
+        Read content from a file in the container.
+
+        Args:
+            file_path (str): Path to the file in the container.
+
+        Returns:
+            str: Content of the file.
         """
         pass
 

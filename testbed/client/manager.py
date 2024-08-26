@@ -25,7 +25,9 @@ from testbed.schema import (
     ContainerStatus,
     TestbedSummary,
     TestbedDetailed,
+    SWEbenchInstance,
 )
+from testbed.swebench.utils import load_swebench_instance
 
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "testbeds")
 
@@ -213,14 +215,15 @@ class TestbedManager:
                 last_status = current_status
 
             if (
-                    current_status["pod_phase"] == "Running"
-                    and current_status["external_ip"]
-                    and current_status["testbed_ready"]
-                    and current_status["sidecar_ready"]
+                current_status["pod_phase"] == "Running"
+                and current_status["external_ip"]
+                and current_status["testbed_ready"]
+                and current_status["sidecar_ready"]
             ):
                 finish_text = f"Testbed {testbed_id} is ready and can be reached on http://{current_status['external_ip']}:8000!"
                 if "IPython" in sys.modules:
                     from IPython.display import clear_output
+
                     print(finish_text)
                 else:
                     logger.info(finish_text)
@@ -238,7 +241,11 @@ class TestbedManager:
             )
         return None
 
-    def create_client(self, testbed_id: str, timeout: float = 30) -> TestbedClient:
+    def create_client(
+        self,
+        testbed_id: str,
+        timeout: float = 30,
+    ) -> TestbedClient:
         start_time = time.time()
         while time.time() - start_time < timeout:
             testbed = self.get_testbed(testbed_id)
@@ -251,11 +258,17 @@ class TestbedManager:
                 and testbed.status.sidecar.state == "running"
                 and testbed.external_ip
             ):
+                instance = load_swebench_instance(testbed.instance_id)
                 client = TestbedClient(
-                    testbed_id=testbed_id, host=testbed.external_ip, port=8000
+                    testbed_id=testbed_id,
+                    host=testbed.external_ip,
+                    port=8000,
+                    instance=instance,
                 )
                 logger.info(f"Health checking client")
-                assert client.check_health(timeout=120), f"Health check on testbed failed"
+                assert client.check_health(
+                    timeout=120
+                ), f"Health check on testbed failed"
                 logger.info(f"Health check successful, client ready")
                 return client
             else:
@@ -476,7 +489,9 @@ class TestbedManager:
         manifest_yaml = self.service_template.render(context)
         return yaml.safe_load(manifest_yaml)
 
-    def find_testbed_by_instance_id(self, instance_id: str) -> Optional[TestbedDetailed]:
+    def find_testbed_by_instance_id(
+        self, instance_id: str
+    ) -> Optional[TestbedDetailed]:
         job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
         for job in job_list.items:
             if job.metadata.labels.get("instance-id") == instance_id:

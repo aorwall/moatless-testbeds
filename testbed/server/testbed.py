@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from testbed.container.kubernetes import KubernetesContainer
-from testbed.schema import  EvaluationResult, SWEbenchInstance,  CommandStatusResponse
+from testbed.schema import EvaluationResult, SWEbenchInstance, CommandStatusResponse
 from testbed.storage.azure_blob import AzureBlobStorage
 from testbed.swebench.run_evaluation import run_instance, EvaluationError
 
@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class Testbed:
-
     def __init__(self, testbed_id: str):
         self.testbed_id = testbed_id
         logger.info(f"Initializing Testbed with ID: {testbed_id}")
@@ -25,7 +24,7 @@ class Testbed:
         logger.info("Testbed initialization complete")
 
     def run_commands(self, commands: list[str]):
-        self.container.exec_commands(commands)
+        self.container.execute(commands)
         # TODO: Check for errors
         self.executing_commands = commands
 
@@ -34,9 +33,17 @@ class Testbed:
         output = self.container.get_output()
         commands = self.container.last_executed_commands
 
-        return CommandStatusResponse(is_executing=is_executing, commands=commands, output=output)
+        return CommandStatusResponse(
+            is_executing=is_executing, commands=commands, output=output
+        )
 
-    def run_evaluation(self, instance: SWEbenchInstance, run_id: Optional[str] = None, patch: Optional[str] = None, timeout: int = 1800) -> EvaluationResult:
+    def run_evaluation(
+        self,
+        instance: SWEbenchInstance,
+        run_id: Optional[str] = None,
+        patch: Optional[str] = None,
+        timeout: int = 1800,
+    ) -> EvaluationResult:
         instance_id = instance.instance_id
         run_id = run_id or uuid.uuid4().hex
 

@@ -17,11 +17,8 @@ from testbed.swebench.constants import (
     TestStatus,
 )
 from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER
-from testbed.swebench.test_spec import TestSpec
 
-from dataclasses import dataclass, field
 from typing import Dict, List, Any
-from testbed.schema import EvaluationResult, Prediction, TestsStatus, TestResult
 
 
 # MARK: Utility functions
@@ -48,7 +45,9 @@ def test_failed(case: str, sm: dict[str, str]) -> bool:
     )
 
 
-def get_logs_eval(repo: str, log_fp: Path) -> tuple[dict[str, str], bool]:
+def get_logs_eval(
+    repo: str, log_fp: Path | None = None, content: str | None = None
+) -> tuple[dict[str, str], bool]:
     """
     Retrieve evaluation results for a task instance from its corresponding log file
 
@@ -63,33 +62,35 @@ def get_logs_eval(repo: str, log_fp: Path) -> tuple[dict[str, str], bool]:
     """
     log_parser = MAP_REPO_TO_PARSER[repo]
 
-    if not os.path.exists(log_fp):
-        raise FileNotFoundError(f"Log file {log_fp} not found")
+    if not content:
+        if not os.path.exists(log_fp):
+            raise FileNotFoundError(f"Log file {log_fp} not found")
 
-    with open(log_fp) as f:
-        content = f.read()
-        # TODO fix constant here
-        if (
-            any(
-                [
-                    x in content
-                    for x in [
-                        APPLY_PATCH_FAIL,
-                        RESET_FAILED,
-                        TESTS_ERROR,
-                        TESTS_TIMEOUT,
-                        "Failed to reset task environment",
+        with open(log_fp) as f:
+            content = f.read()
+            # TODO fix constant here
+            if (
+                any(
+                    [
+                        x in content
+                        for x in [
+                            APPLY_PATCH_FAIL,
+                            RESET_FAILED,
+                            TESTS_ERROR,
+                            TESTS_TIMEOUT,
+                            "Failed to reset task environment",
+                        ]
                     ]
-                ]
-            )
-            or "applied patch" not in content.lower()
-        ):
-            # Eval patch was not applied successfully
-            return {}, False
+                )
+                or "applied patch" not in content.lower()
+            ):
+                # Eval patch was not applied successfully
+                return {}, False
 
-        # Get status map of evaluation results
-        content = content.split(f"{APPLY_PATCH_PASS} (pred)")[-1]
-        return log_parser(content), True
+    # Get status map of evaluation results
+    content = content.split(f"{APPLY_PATCH_PASS} (pred)")[-1]
+
+    return log_parser(content), True
 
 
 def get_eval_tests_report(
@@ -222,49 +223,3 @@ def get_resolution_status(report: dict[str, dict[str, Any]]) -> str:
         return ResolvedStatus.PARTIAL.value
     else:
         return ResolvedStatus.NO.value
-
-
-def get_pred_report(
-    test_spec: TestSpec,
-    log_path: Path,
-    include_tests_status: bool,
-) -> EvaluationResult:
-    """
-    Generate a report of model evaluation results from a prediction, task instance,
-    and evaluation log.
-
-    Args:
-        test_spec (TestSpec): test spec containing keys "instance_id", "FAIL_TO_PASS", and "PASS
-        instance_id (str): instance ID
-        log_path (str): path to evaluation log
-        include_tests_status (bool): whether to include the status of each test in the returned report
-    Returns:
-        report (EvaluationResult): report of metrics
-    """
-    result = EvaluationResult(test_spec=test_spec, instance_id=test_spec.instance_id)
-
-    # Get evaluation logs
-    eval_sm, found = get_logs_eval(test_spec.repo, log_path)
-
-    if not found:
-        return result
-
-    result.patch_applied = True
-
-    eval_ref = {
-        KEY_INSTANCE_ID: test_spec.instance_id,
-        FAIL_TO_PASS: test_spec.FAIL_TO_PASS,
-        PASS_TO_PASS: test_spec.PASS_TO_PASS,
-    }
-
-    report = get_eval_tests_report(eval_sm, eval_ref)
-    if get_resolution_status(report) == ResolvedStatus.FULL.value:
-        result.resolved = True
-
-    if include_tests_status:
-        result.tests_status = TestsStatus(
-            FAIL_TO_PASS=TestResult(**report[FAIL_TO_PASS]),
-            PASS_TO_PASS=TestResult(**report[PASS_TO_PASS]),
-        )
-
-    return result

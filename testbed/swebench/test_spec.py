@@ -3,14 +3,26 @@ import json
 import platform
 import re
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Union, Tuple
 
-from testbed.schema import SWEbenchInstance
+from testbed.schema import SWEbenchInstance, EvaluationResult, TestsStatus, TestResult
 from testbed.swebench.constants import (
     MAP_REPO_TO_INSTALL,
     MAP_REPO_VERSION_TO_SPECS,
     USE_X86,
+    NON_TEST_EXTS,
+    APPLY_PATCH_FAIL,
+    RESET_FAILED,
+    TESTS_ERROR,
+    TESTS_TIMEOUT,
+    APPLY_PATCH_PASS,
+    KEY_INSTANCE_ID,
+    FAIL_TO_PASS,
+    PASS_TO_PASS,
+    ResolvedStatus,
 )
+from testbed.swebench.grading import get_eval_tests_report, get_resolution_status
+from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER
 from testbed.swebench.utils import get_test_directives
 
 DIFF_MODIFIED_FILE_REGEX = r"--- a/(.*)"
@@ -25,11 +37,37 @@ class TestSpec:
     instance_id: str
     repo: str
     version: str
-    repo_script_list: list[str]
-    eval_script_list: list[str]
+    base_commit: str
+    test_patch: str
+    fail_to_pass: list[str]
+    pass_to_pass: list[str]
     arch: str
-    FAIL_TO_PASS: list[str]
-    PASS_TO_PASS: list[str]
+
+    def __post_init__(self):
+        self.env_name = "testbed"
+        self.repo_directory = f"/{self.env_name}"
+        self.specs = MAP_REPO_VERSION_TO_SPECS[self.repo][self.version]
+
+    @classmethod
+    def from_instance(cls, instance: SWEbenchInstance) -> "TestSpec":
+        if isinstance(instance, cls):
+            return instance
+
+        if platform.machine() in {"aarch64", "arm64"}:
+            arch = "arm64" if instance.instance_id not in USE_X86 else "x86_64"
+        else:
+            arch = "x86_64"
+
+        return cls(
+            instance_id=instance.instance_id,
+            repo=instance.repo,
+            version=instance.version,
+            base_commit=instance.base_commit,
+            test_patch=instance.test_patch,
+            fail_to_pass=instance.fail_to_pass,
+            pass_to_pass=instance.pass_to_pass,
+            arch=arch,
+        )
 
     @property
     def eval_script(self):
@@ -37,7 +75,6 @@ class TestSpec:
             "\n".join(["#!/bin/bash", "set -uxo pipefail"] + self.eval_script_list)
             + "\n"
         )
-        # Don't exit early because we need to revert tests at the end
 
     @property
     def install_repo_script(self):
@@ -82,168 +119,189 @@ class TestSpec:
         else:
             raise ValueError(f"Invalid architecture: {self.arch}")
 
-
-def make_repo_script_list(specs, repo, repo_directory, base_commit, env_name):
-    """
-    Create a list of bash commands to set up the repository for testing.
-    This is the setup script for the instance image.
-    """
-    setup_commands = [
-        f"git clone -o origin https://github.com/{repo} {repo_directory}",
-        f"chmod -R 777 {repo_directory}",  # So nonroot user can run tests
-        f"cd {repo_directory}",
-        f"git reset --hard {base_commit}",
-        # Remove the remote so the agent won't see newer commits.
-        f"git remote remove origin",
-        # Make sure conda is available for later use
-        "source /opt/miniconda3/bin/activate",
-        f"conda activate {env_name}",
-        f'echo "Current environment: $CONDA_DEFAULT_ENV"',
-    ]
-    if repo in MAP_REPO_TO_INSTALL:
-        setup_commands.append(MAP_REPO_TO_INSTALL[repo])
-
-    # Run pre-install set up if provided
-    if "pre_install" in specs:
-        for pre_install in specs["pre_install"]:
-            setup_commands.append(pre_install)
-
-    if "install" in specs:
-        setup_commands.append(specs["install"])
-    return setup_commands
-
-def make_env_setup_script_list(instance: SWEbenchInstance) -> list[str]:
-    env_name = "testbed"
-    repo_directory = f"/{env_name}"
-    specs = MAP_REPO_VERSION_TO_SPECS[instance.repo][instance.version]
-    base_commit = instance.base_commit
-
-    eval_commands = [
-        f"source /opt/miniconda3/bin/activate",
-        f"conda activate {env_name}",
-        f"cd {repo_directory}",
-    ]
-    if "eval_commands" in specs:
-        eval_commands += specs["eval_commands"]
-    eval_commands += [
-        f"git config --global --add safe.directory {repo_directory}",  # for nonroot user
-        f"cd {repo_directory}",
-        # This is just informational, so we have a record
-        f"git status",
-        f"git show",
-        f"git diff {base_commit}",
-        "source /opt/miniconda3/bin/activate",
-        f"conda activate {env_name}",
-    ]
-    if "install" in specs:
-        eval_commands.append(specs["install"])
-    return eval_commands
-
-
-def get_test_command(instance: SWEbenchInstance):
-    return " ".join(
-        [
-            MAP_REPO_VERSION_TO_SPECS[instance.repo][instance.version][
-                "test_cmd"
-            ],
-            *get_test_directives(instance),
+    def patch_commands(self, patch_filepath: str) -> list[str]:
+        return [
+            f"git apply -v {patch_filepath}",
+            f"if [ $? -ne 0 ]; then",
+            f"    echo 'Failed to apply patch with git apply -v'",
+            f"    echo 'Trying again with patch command...'",
+            f"    patch --batch --fuzz=5 -p1 -i {patch_filepath}",
+            f"    if [ $? -ne 0 ]; then",
+            f"        echo 'APPLY_PATCH_FAIL:'",
+            f"        patch --batch --fuzz=5 -p1 -i {patch_filepath}",
+            f"        exit 1",
+            f"    else",
+            f"        echo 'APPLY_PATCH_PASS:'",
+            f"        patch --batch --fuzz=5 -p1 -i {patch_filepath}",
+            f"    fi",
+            f"else",
+            f"    echo 'APPLY_PATCH_PASS:'",
+            f"    git apply -v {patch_filepath}",
+            f"fi",
         ]
-    )
 
-def get_evaluation_commands(instance: SWEbenchInstance):
-    test_files = re.findall(DIFF_MODIFIED_FILE_REGEX, instance.test_patch)
-    reset_tests_command = f"git checkout {instance.base_commit} {' '.join(test_files)}"
-    HEREDOC_DELIMITER = "EOF_114329324912"
-
-    apply_test_patch_command = (
-        f"git apply -v - <<'{HEREDOC_DELIMITER}'\n{instance.test_patch}\n{HEREDOC_DELIMITER}"
-    )
-
-    return [
-        f"git checkout {instance.base_commit} {' '.join(test_files)}",
-        # apply_test_patch_command,
-        get_test_command(instance),
-        reset_tests_command,  # Revert tests after done, leave the repo in the same state as before
-    ]
-
-
-def make_eval_script_list(
-    instance, specs, env_name, repo_directory, base_commit, test_patch
-):
-    """
-    Applies the test patch and runs the tests.
-    """
-    HEREDOC_DELIMITER = "EOF_114329324912"
-    test_files = re.findall(DIFF_MODIFIED_FILE_REGEX, test_patch)
-    # Reset test files to the state they should be in before the patch.
-    reset_tests_command = f"git checkout {base_commit} {' '.join(test_files)}"
-    apply_test_patch_command = (
-        f"git apply -v - <<'{HEREDOC_DELIMITER}'\n{test_patch}\n{HEREDOC_DELIMITER}"
-    )
-
-    test_command = " ".join(
-        [
-            MAP_REPO_VERSION_TO_SPECS[instance["repo"]][instance["version"]][
-                "test_cmd"
-            ],
-            *get_test_directives(instance),
+    @property
+    def repo_script_list(self) -> list[str]:
+        setup_commands = [
+            f"git clone -o origin https://github.com/{self.repo} {self.repo_directory}",
+            f"chmod -R 777 {self.repo_directory}",
+            f"cd {self.repo_directory}",
+            f"git reset --hard {self.base_commit}",
+            f"git remote remove origin",
+            "source /opt/miniconda3/bin/activate",
+            f"conda activate {self.env_name}",
+            f'echo "Current environment: $CONDA_DEFAULT_ENV"',
         ]
-    )
+        if self.repo in MAP_REPO_TO_INSTALL:
+            setup_commands.append(MAP_REPO_TO_INSTALL[self.repo])
 
-    eval_commands = [
-        f"source /opt/miniconda3/bin/activate",
-        f"conda activate {env_name}",
-        f"cd {repo_directory}",
-    ]
-    if "eval_commands" in specs:
-        eval_commands += specs["eval_commands"]
-    eval_commands += [
-        f"git config --global --add safe.directory {repo_directory}",  # for nonroot user
-        f"cd {repo_directory}",
-        # This is just informational, so we have a record
-        f"git status",
-        f"git show",
-        f"git diff {base_commit}",
-        "source /opt/miniconda3/bin/activate",
-        f"conda activate {env_name}",
-    ]
-    if "install" in specs:
-        eval_commands.append(specs["install"])
-    eval_commands += [
-        reset_tests_command,
-        apply_test_patch_command,
-        test_command,
-        reset_tests_command,  # Revert tests after done, leave the repo in the same state as before
-    ]
-    return eval_commands
+        if "pre_install" in self.specs:
+            for pre_install in self.specs["pre_install"]:
+                setup_commands.append(pre_install)
 
+        if "install" in self.specs:
+            setup_commands.append(self.specs["install"])
+        return setup_commands
 
-def make_test_spec(instance: SWEbenchInstance) -> TestSpec:
-    if isinstance(instance, TestSpec):
-        return instance
-    env_name = "testbed"
-    repo_directory = f"/{env_name}"
-    specs = MAP_REPO_VERSION_TO_SPECS[instance.repo][instance.version]
+    @property
+    def env_script_list(self) -> list[str]:
+        eval_commands = [
+            f"source /opt/miniconda3/bin/activate",
+            f"conda activate {self.env_name}",
+            f"cd {self.repo_directory}",
+        ]
+        if "eval_commands" in self.specs:
+            eval_commands += self.specs["eval_commands"]
+        eval_commands += [
+            f"git config --global --add safe.directory {self.repo_directory}",
+            f"cd {self.repo_directory}",
+            f"git status",
+            f"git show",
+            f"git diff {self.base_commit}",
+            "source /opt/miniconda3/bin/activate",
+            f"conda activate {self.env_name}",
+        ]
+        if "install" in self.specs:
+            eval_commands.append(self.specs["install"])
+        return eval_commands
 
-    repo_script_list = make_repo_script_list(
-        specs, instance.repo, repo_directory, instance.base_commit, env_name
-    )
-    eval_script_list = make_eval_script_list(
-        instance, specs, env_name, repo_directory, instance.base_commit, instance.test_patch
-    )
-    if platform.machine() in {"aarch64", "arm64"}:
-        # use arm64 unless explicitly specified
-        arch = "arm64" if instance.instance_id not in USE_X86 else "x86_64"
-    else:
-        arch = "x86_64"
+    def get_test_directives(self) -> list:
+        """
+        Get test directives from the test_patch of a task instance
 
-    return TestSpec(
-        instance_id=instance.instance_id,
-        repo=instance.repo,
-        repo_script_list=repo_script_list,
-        eval_script_list=eval_script_list,
-        version=instance.version,
-        arch=arch,
-        FAIL_TO_PASS=instance.fail_to_pass,
-        PASS_TO_PASS=instance.pass_to_pass,
-    )
+        Returns:
+            directives (list): List of test directives
+        """
+
+        # Get test directives from test patch and remove non-test files
+        diff_pat = r"diff --git a/.* b/(.*)"
+        test_patch = self.test_patch
+        directives = re.findall(diff_pat, test_patch)
+        directives = [
+            d for d in directives if not any(d.endswith(ext) for ext in NON_TEST_EXTS)
+        ]
+
+        # For Django tests, remove extension + "tests/" prefix and convert slashes to dots (module referencing)
+        if self.repo == "django/django":
+            directives_transformed = []
+            for d in directives:
+                d = d[: -len(".py")] if d.endswith(".py") else d
+                d = d[len("tests/") :] if d.startswith("tests/") else d
+                d = d.replace("/", ".")
+                directives_transformed.append(d)
+            directives = directives_transformed
+
+        return directives
+
+    @property
+    def test_script(self) -> str:
+        return " ".join(
+            [
+                self.specs["test_cmd"],
+                *self.get_test_directives(),
+            ]
+        )
+
+    @property
+    def eval_script_list(self) -> list[str]:
+        test_files = re.findall(DIFF_MODIFIED_FILE_REGEX, self.test_patch)
+        reset_tests_command = f"git checkout {self.base_commit} {' '.join(test_files)}"
+        HEREDOC_DELIMITER = "EOF_114329324912"
+        apply_test_patch_command = f"git apply -v - <<'{HEREDOC_DELIMITER}'\n{self.test_patch}\n{HEREDOC_DELIMITER}"
+
+        eval_commands = self.env_script_list + [
+            reset_tests_command,
+            apply_test_patch_command,
+            self.test_script,
+            reset_tests_command,
+        ]
+        return eval_commands
+
+    def get_pred_report(self, content: str) -> TestsStatus:
+        """
+        Generate a report of model evaluation results from a prediction, task instance,
+        and evaluation log.
+
+        Args:
+            test_spec (TestSpec): test spec containing keys "instance_id", "FAIL_TO_PASS", and "PASS
+            instance_id (str): instance ID
+            log_path (str): path to evaluation log
+            include_tests_status (bool): whether to include the status of each test in the returned report
+        Returns:
+            report (EvaluationResult): report of metrics
+        """
+
+        eval_sm, found = self.get_logs_eval(content)
+        if not found:
+            return TestsStatus(status=ResolvedStatus.NO)
+
+        eval_ref = {
+            KEY_INSTANCE_ID: self.instance_id,
+            FAIL_TO_PASS: self.fail_to_pass,
+            PASS_TO_PASS: self.pass_to_pass,
+        }
+
+        report = get_eval_tests_report(eval_sm, eval_ref)
+        status = get_resolution_status(report)
+
+        return TestsStatus(
+            status=status,
+            fail_to_pass=TestResult(**report[FAIL_TO_PASS]),
+            pass_to_pass=TestResult(**report[PASS_TO_PASS]),
+        )
+
+    def get_logs_eval(self, content: str | None = None) -> tuple[dict[str, str], bool]:
+        """
+        Retrieve evaluation results for a task instance from its corresponding log file
+
+        Args:
+            content (str): log file content
+        Returns:
+            bool: whether the patch applied successfully
+            dict: status map
+
+        """
+        log_parser = MAP_REPO_TO_PARSER[self.repo]
+
+        if (
+            any(
+                [
+                    x in content
+                    for x in [
+                        APPLY_PATCH_FAIL,
+                        RESET_FAILED,
+                        TESTS_ERROR,
+                        TESTS_TIMEOUT,
+                        "Failed to reset task environment",
+                    ]
+                ]
+            )
+            or "applied patch" not in content.lower()
+        ):
+            # Eval patch was not applied successfully
+            return {}, False
+
+        # Get status map of evaluation results
+        content = content.split(f"{APPLY_PATCH_PASS} (pred)")[-1]
+
+        return log_parser(content), True

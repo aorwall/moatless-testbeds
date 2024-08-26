@@ -23,16 +23,22 @@ class TestbedSDK:
     def __enter__(self):
         config.load_kube_config()
         self.manager = TestbedManager(namespace=self.namespace)
-        logger.info(f"Creating testbed for instance {self.instance_id} in namespace {self.namespace}")
+        logger.info(
+            f"Creating testbed for instance {self.instance_id} in namespace {self.namespace}"
+        )
+
+        self.instance = load_swebench_instance(
+            instance_id=self.instance_id, name="princeton-nlp/SWE-bench_Lite"
+        )
+        assert self.instance, f"Instance {self.instance_id} not found"
+
         response = self.manager.create_testbed(self.instance_id)
         self.testbed_id = response.testbed_id
-
-        self.instance = load_swebench_instance(instance_id=self.instance_id, name="princeton-nlp/SWE-bench_Lite")
 
         self.manager.wait_for_testbed_ready(self.testbed_id)
         self.client = self.manager.create_client(self.testbed_id)
         logger.info(f"Client created, running health check")
-        
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -47,16 +53,13 @@ class TestbedSDK:
 
     def setup_swebench_environment(self):
         setup_commands = make_env_setup_script_list(self.instance)
-        self.client.execute_commands(setup_commands)
+        self.client.execute(setup_commands)
 
     def run_evaluation(self, run_id: str, patch: str | None = None) -> EvaluationResult:
-
         dataset = load_swebench_dataset(name="princeton-nlp/SWE-bench_Lite")
         instance = dataset[self.instance_id]
 
-        request = RunEvaluationRequest(
-            run_id=run_id, instance=instance, patch=patch
-        )
+        request = RunEvaluationRequest(run_id=run_id, instance=instance, patch=patch)
         return self.client.run_evaluation(request)
 
     def save_file(self, file_path: str, content: str):
@@ -76,7 +79,7 @@ class TestbedSDK:
         logger.info(f"Saving file to {file_path}")
         try:
             response = self.client.save_file(file_path, content)
-            if 'error' in response:
+            if "error" in response:
                 raise Exception(f"Failed to save file: {response['error']}")
             logger.info(f"File saved successfully to {file_path}")
             return response
@@ -100,7 +103,7 @@ class TestbedSDK:
         logger.info(f"Reading file from {file_path}")
         try:
             content = self.client.get_file(file_path)
-            if isinstance(content, dict) and 'error' in content:
+            if isinstance(content, dict) and "error" in content:
                 raise Exception(f"Failed to read file: {content['error']}")
             logger.info(f"File read successfully from {file_path}")
             return content
