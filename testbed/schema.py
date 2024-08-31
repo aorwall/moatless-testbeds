@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Optional, Literal, Dict, List, Any
 from uuid import uuid4
 
@@ -74,46 +75,54 @@ class RunCommandsRequest(BaseModel):
 
 
 class CommandExecutionResponse(BaseModel):
-    execution_id: str = Field(
-        ..., description="Unique identifier for the command execution"
-    )
     status: Literal["running", "completed"] = Field(
         ..., description="Status of the command execution"
     )
     output: Optional[str] = Field(None, description="Output of the command execution")
 
 
-class GetExecutionResultRequest(BaseModel):
-    execution_id: str = Field(
-        ..., description="Unique identifier for the command execution"
-    )
-
-
-class CommandStatusResponse(BaseModel):
-    is_executing: bool = Field(
-        ..., description="Whether the command is still executing"
-    )
-    commands: list[str] = Field(
-        default_factory=list, description="List of commands being executed"
-    )
-    output: Optional[str] = Field(None, description="Output of the command execution")
+class TestStatus(Enum):
+    FAILED = "FAILED"
+    PASSED = "PASSED"
+    SKIPPED = "SKIPPED"
+    ERROR = "ERROR"
 
 
 class TestResult(BaseModel):
+    status: TestStatus = Field(..., description="Status of the test")
+    name: str
+    file_path: str | None = None
+    method: str | None = None
+    failure_output: str | None = None
+
+    @model_validator(mode='before')
+    def convert_status_to_enum(cls, values):
+        if isinstance(values.get('status'), str):
+            values['status'] = TestStatus(values['status'])
+        return values
+
+    def model_dump(self, **kwargs):
+        data = super().model_dump(**kwargs)
+        data['status'] = self.status.value
+        return data
+
+
+class EvalTestResult(BaseModel):
     success: List[str] = Field(
         default_factory=list, description="List of successful tests"
     )
     failure: List[str] = Field(default_factory=list, description="List of failed tests")
 
 
+
 class TestsStatus(BaseModel):
     status: ResolvedStatus = Field(
         ..., description="Whether the problem was resolved"
     )
-    fail_to_pass: TestResult = Field(
+    fail_to_pass: EvalTestResult = Field(
         default_factory=TestResult, description="Tests that changed from fail to pass"
     )
-    pass_to_pass: TestResult = Field(
+    pass_to_pass: EvalTestResult = Field(
         default_factory=TestResult, description="Tests that remained passing"
     )
 
@@ -130,6 +139,9 @@ class EvaluationResult(BaseModel):
     tests_status: TestsStatus = Field(
         default_factory=TestsStatus, description="Status of all tests"
     )
+    output: Optional[str] = Field(
+        default=None, description="Output of the evaluation run"
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -137,8 +149,9 @@ class EvaluationResult(BaseModel):
             "patch_applied": self.patch_applied,
             "resolved": self.resolved,
             "tests_status": self.tests_status.model_dump(),
+            "output": self.output,
+            "git_diff_output_before": self.git_diff_output_before,
         }
-
 
 class ContainerStatus(BaseModel):
     ready: bool = Field(..., description="Whether the container is ready")

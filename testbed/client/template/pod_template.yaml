@@ -15,24 +15,44 @@ spec:
       - name: testbed
         image: {{ testbed_image }}
         imagePullPolicy: IfNotPresent
-        command: [ "/bin/sh" ]
+        command: [ "/bin/bash" ]
         args:
           - -c
           - |
-            echo "Starting testbed"
+            echo "Initating testbed"
+            {% for command in init_env_commands %}
+            {{ command }}
+            {% endfor %}
+            echo "Started testbed"
+            touch /shared/started
             while true; do
-              if [ -f /shared/run_cmd ]; then
-                echo "Starting /shared/commands.sh"
-                /shared/commands.sh 2>&1 | tee /shared/cmd_output.txt
-                rm /shared/run_cmd
+              if [ -f /shared/run_cmd.sh ]; then
+                echo "Starting /shared/run_cmd.sh"
+                touch /shared/cmd_output.txt
+                /shared/run_cmd.sh 2>&1 | tee /shared/cmd_output.txt
                 touch /shared/complete_cmd
-                echo "Finished /shared/commands.sh"
+                rm /shared/run_cmd.sh
+                echo "Finished /shared/run_cmd.sh"
               elif [ -f /shared/kill ]; then
                 echo "Kill command received. Exiting."
                 exit 0
               fi
-              sleep 1
+              sleep 0.1
             done
+        startupProbe:
+          exec:
+            command:
+              - cat
+              - /shared/started
+          failureThreshold: 600
+          periodSeconds: 1
+        livenessProbe:
+          exec:
+            command:
+              - cat
+              - /shared/started
+          initialDelaySeconds: 5
+          periodSeconds: 5
         resources:
           requests:
             cpu: "{{ request_cpu }}"
@@ -48,6 +68,18 @@ spec:
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          failureThreshold: 1
+          periodSeconds: 10
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          failureThreshold: 30
+          periodSeconds: 10
         volumeMounts:
         - name: shared-volume
           mountPath: /shared

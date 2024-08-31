@@ -13,10 +13,10 @@ from testbed.swebench.constants import (
     RESET_FAILED,
     TESTS_ERROR,
     TESTS_TIMEOUT,
-    ResolvedStatus,
-    TestStatus,
+    ResolvedStatus
 )
 from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER
+from testbed.schema import TestResult, TestStatus
 
 from typing import Dict, List, Any
 
@@ -45,64 +45,15 @@ def test_failed(case: str, sm: dict[str, str]) -> bool:
     )
 
 
-def get_logs_eval(
-    repo: str, log_fp: Path | None = None, content: str | None = None
-) -> tuple[dict[str, str], bool]:
-    """
-    Retrieve evaluation results for a task instance from its corresponding log file
-
-    Args:
-        repo (str): repository name
-        log_fp (str): path to log file
-    Returns:
-        bool: whether the patch applied successfully
-        dict: status map
-
-    TODO(john-b-yang): Check this is working properly...
-    """
-    log_parser = MAP_REPO_TO_PARSER[repo]
-
-    if not content:
-        if not os.path.exists(log_fp):
-            raise FileNotFoundError(f"Log file {log_fp} not found")
-
-        with open(log_fp) as f:
-            content = f.read()
-            # TODO fix constant here
-            if (
-                any(
-                    [
-                        x in content
-                        for x in [
-                            APPLY_PATCH_FAIL,
-                            RESET_FAILED,
-                            TESTS_ERROR,
-                            TESTS_TIMEOUT,
-                            "Failed to reset task environment",
-                        ]
-                    ]
-                )
-                or "applied patch" not in content.lower()
-            ):
-                # Eval patch was not applied successfully
-                return {}, False
-
-    # Get status map of evaluation results
-    content = content.split(f"{APPLY_PATCH_PASS} (pred)")[-1]
-
-    return log_parser(content), True
-
-
 def get_eval_tests_report(
-    eval_sm: dict[str, str],
-    gold_results: dict[str, str],
-    calculate_to_fail: bool = False,
+    eval_results: list[TestResult],
+    gold_results: dict[str, list[str]]
 ) -> dict[str, dict[str, list[str]]]:
     """
     Create a report based on failure/pass change from gold results to eval results.
 
     Args:
-        eval_sm (dict): evaluation status map
+        eval_results (list[TestResult]): evaluation results as a list of TestResult objects
         gold_results (dict): gold results
         calculate_to_fail (bool): whether to calculate metrics for "x to fail" tests
     Returns:
@@ -113,30 +64,26 @@ def get_eval_tests_report(
     - Pass-Pass (P2P) + P: Success (Maintenance)
     - Fail-Pass (F2P) + F: Failure
     - Pass-Pass (P2P) + F: Failure
-
-    Miscellaneous Definitions
-    - Fail-Fail (F2F) + F: Failure Maintenance
-    - Pass-Fail (P2F) + F: Not considered
-    - Fail-Fail (F2F) + P: Success (Extra Credit)
-    - Pass-Fail (P2F) + P: Not considered
     """
+    # Convert eval_results to a dict for easier lookup
+    eval_dict = {result.name: result.status for result in eval_results}
+
     # Calculate resolution metrics
     f2p_success = []
     f2p_failure = []
     for test_case in gold_results[FAIL_TO_PASS]:
-        if test_passed(test_case, eval_sm):
-            # Assume silent success for now (test case not in eval_sm)
+        if test_case in eval_dict and eval_dict[test_case] == TestStatus.PASSED:
             f2p_success.append(test_case)
-        elif test_failed(test_case, eval_sm):
+        else:
             f2p_failure.append(test_case)
 
     # Calculate maintenance metrics
     p2p_success = []
     p2p_failure = []
     for test_case in gold_results[PASS_TO_PASS]:
-        if test_passed(test_case, eval_sm):
+        if test_case in eval_dict and eval_dict[test_case] == TestStatus.PASSED:
             p2p_success.append(test_case)
-        elif test_failed(test_case, eval_sm):
+        else:
             p2p_failure.append(test_case)
 
     results = {
@@ -150,37 +97,6 @@ def get_eval_tests_report(
         },
     }
 
-    f2f_success = []
-    f2f_failure = []
-    p2f_success = []
-    p2f_failure = []
-    if calculate_to_fail:
-        # Calculate "extra credit" metrics
-        for test_case in gold_results[FAIL_TO_FAIL]:
-            if test_passed(test_case, eval_sm):
-                f2f_success.append(test_case)
-            elif test_failed(test_case, eval_sm):
-                f2f_failure.append(test_case)
-
-        # Calculate not considered metrics
-        for test_case in gold_results[PASS_TO_FAIL]:
-            if test_passed(test_case, eval_sm):
-                p2f_success.append(test_case)
-            elif test_failed(test_case, eval_sm):
-                p2f_failure.append(test_case)
-
-    results.update(
-        {
-            FAIL_TO_FAIL: {
-                "success": f2f_success,
-                "failure": f2f_failure,
-            },
-            PASS_TO_FAIL: {
-                "success": p2f_success,
-                "failure": p2f_failure,
-            },
-        }
-    )
     return results
 
 

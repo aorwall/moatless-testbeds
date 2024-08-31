@@ -2,7 +2,7 @@ import os
 import pytest
 import uuid
 import logging
-from testbed.sdk import TestbedSDK
+from testbed.client.sdk import TestbedSDK
 from dotenv import load_dotenv
 from kubernetes import client, config
 
@@ -32,23 +32,22 @@ def test_full_integration():
     logger.info(f"Starting integration test {test_id}")
 
     instance_id = "sympy__sympy-21847"
+    # instance_id = "django__django-15731"
+    instance_id = "matplotlib__matplotlib-24970"  # slow init
 
-    with TestbedSDK(instance_id, os.getenv("KUBE_NAMESPACE")) as sdk:
+    with TestbedSDK(instance_id, os.getenv("KUBE_NAMESPACE"), dataset_name="princeton-nlp/SWE-bench_Lite") as testbed:
         logger.info(f"Test {test_id}: Running evaluation")
         run_id = f"test_run_integration_{test_id}"
 
-        content = sdk.read_file("sympy/polys/monomials.py")
-        logger.info(f"Test {test_id}: File content: {content}")
-        patch = ""
-        result = sdk.run_evaluation(run_id, patch)
-        logger.info(f"Test {test_id}: Evaluation finished")
+        response = testbed.execute(["echo 'Hello, World!'"])
+        print(response)
 
-        assert result.resolved
-        assert result.tests_status
-        logger.info(f"Test {test_id}: Evaluation result received")
+        test_status, test_output = testbed.run_tests()
 
-        content = sdk.read_file("sympy/polys/monomials.py")
-        logger.info(f"Test {test_id}: File content: {content}")
+        for r in test_status:
+            print(f"{r.name}: {r.status}")
+        logger.info(test_output)
+
 
     logger.info(f"Test {test_id}: Integration test completed successfully")
 

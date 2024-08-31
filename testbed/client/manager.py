@@ -24,9 +24,9 @@ from testbed.schema import (
     TestbedStatusDetailed,
     ContainerStatus,
     TestbedSummary,
-    TestbedDetailed,
-    SWEbenchInstance,
+    TestbedDetailed, SWEbenchInstance,
 )
+from testbed.swebench.test_spec import TestSpec
 from testbed.swebench.utils import load_swebench_instance
 
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "testbeds")
@@ -35,14 +35,6 @@ logger = logging.getLogger(__name__)
 
 ExecResult = namedtuple("ExecResult", "exit_code,output")
 
-high_prio_instances = [
-    "matplotlib__matplotlib-26011",
-    "matplotlib__matplotlib-24334",
-    "matplotlib__matplotlib-24149",
-    "psf__requests-2317",
-    "sympy__sympy-11870",
-    "sympy__sympy-18057",
-]
 
 high_cpu_instances = [
     "sympy__sympy-11870",
@@ -60,12 +52,18 @@ high_cpu_instances = [
 
 
 class TestbedManager:
-    def __init__(self, namespace: str = KUBE_NAMESPACE, local_testing: bool = True):
-        if local_testing:
-            config.load_kube_config()
-        else:
-            config.load_incluster_config()
 
+    def __init__(self,
+                 namespace: str = KUBE_NAMESPACE,
+                 in_cluster: bool = False,
+                 dataset_name: str = "princeton-nlp/SWE-bench_Lite"):
+        if in_cluster:
+            config.load_incluster_config()
+        else:
+            config.load_kube_config()
+
+
+        self.dataset_name = dataset_name
         self.namespace = namespace
         self.container_name = "testbed"
 
@@ -94,36 +92,37 @@ class TestbedManager:
                 )
         return testbeds
 
-    def get_testbed(self, testbed_id: str) -> Optional[TestbedDetailed]:
-        job = self._get_job(testbed_id)
-        if job:
-            status = self._read_testbed_status_detailed(job.metadata.name)
-            if status:
-                external_ip = None
-                try:
-                    external_ip = self._get_service_external_ip(testbed_id)
-                except ValueError:
-                    logger.debug(
-                        f"External IP not yet available for testbed {testbed_id}"
-                    )
-
-                return TestbedDetailed(
+    def get_or_create_testbed(self, instance_id: str, user_id: str | None = None, timeout: int = 60, log_dir: str | None = None) -> Optional[TestbedClient]:
+        job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
+        for job in job_list.items:
+            if job.metadata.labels.get("instance-id") == instance_id:
+                return TestbedClient(
                     testbed_id=job.metadata.name,
-                    instance_id=job.metadata.labels.get("instance-id", "unknown"),
-                    status=status,
-                    external_ip=external_ip,
+                    port=8000,
+                    instance=load_swebench_instance(instance_id),
+                    startup_timeout=timeout,
+                    log_dir=log_dir
                 )
-        return None
+
+        return self.create_testbed(instance_id, user_id, timeout, log_dir)
 
     def create_testbed(
-        self, instance_id: str, user_id: str | None = None
-    ) -> CreateTestbedResponse:
+        self, instance_id: str, user_id: str | None = None, timeout: int = 60, log_dir: str | None = None
+    ) -> TestbedClient:
         logger.info(f"create_testbed(user: {user_id}, instance_id: {instance_id})")
+        start_time = time.time()
+        try:
+            instance = load_swebench_instance(instance_id)
+            if not instance:
+                raise ValueError(f"Instance {instance_id} not found")
+        except Exception as e:
+            logger.exception(f"Error loading instance {instance_id}")
+            raise RuntimeError(f"Error loading instance {instance_id}")
 
         try:
             testbed_id = self._generate_test_id(instance_id)
             job_manifest = self._create_job_manifest(
-                instance_id=instance_id, user_id=user_id, testbed_id=testbed_id
+                instance=instance, user_id=user_id, testbed_id=testbed_id
             )
             service_manifest = self._create_service_manifest(testbed_id)
 
@@ -135,10 +134,24 @@ class TestbedManager:
                 body=service_manifest, namespace=self.namespace
             )
 
+            job = self._get_job(testbed_id)
+            while not job:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Job creation of job {testbed_id} timed out")
+                time.sleep(1)
+                job = self._get_job(testbed_id)
+
             logger.info(
                 f"create_testbed(user: {user_id}, instance_id: {instance_id}, testbed_id: {testbed_id}) Job and Service created successfully in namespace {self.namespace}."
             )
-            return CreateTestbedResponse(testbed_id=testbed_id)
+
+            return TestbedClient(
+                testbed_id=testbed_id,
+                port=8000,
+                instance=instance,
+                startup_timeout=timeout,
+                log_dir=log_dir,
+            )
         except client.exceptions.ApiException as e:
             if e.reason == "Conflict":
                 logger.warning(f"Job or Service already exists.")
@@ -149,146 +162,29 @@ class TestbedManager:
                 )
                 raise RuntimeError("Error creating job or service")
 
-    def wait_for_testbed_ready(self, testbed_id: str, timeout=300, interval=1):
-        start_time = time.time()
-        last_status = {}
-
-        def print_status(status, elapsed_time):
-            output = [
-                f"Testbed ID: {testbed_id}",
-                f"Pod Phase: {status['pod_phase']}",
-                f"External IP: {status['external_ip'] or 'Not assigned yet'}",
-                "Testbed Container:",
-                f"  Ready: {status['testbed_ready']}",
-                f"  State: {status['testbed_state']}",
-                "Sidecar Container:",
-                f"  Ready: {status['sidecar_ready']}",
-                f"  State: {status['sidecar_state']}",
-                f"\nWaiting for testbed to be ready... (Elapsed time: {int(elapsed_time)}s)",
-            ]
-            if status["testbed_reason"]:
-                output.insert(5, f"  Reason: {status['testbed_reason']}")
-            if status["sidecar_reason"]:
-                output.insert(-1, f"  Reason: {status['sidecar_reason']}")
-
-            if "IPython" in sys.modules:
-                from IPython.display import clear_output
-
-                clear_output(wait=True)
-                print("\n".join(output))
-            else:
-                logger.info("\n".join(output))
-
-        not_found_count = 0
-        while time.time() - start_time < timeout:
-            testbed = self.get_testbed(testbed_id)
-            if not testbed:
-                not_found_count += 1
-                if not_found_count > 10:
-                    raise TimeoutError(
-                        f"Testbed {testbed_id} not found after {timeout} seconds"
-                    )
-                current_status = {
-                    "pod_phase": "Not found",
-                    "external_ip": "Not found",
-                    "testbed_ready": False,
-                    "testbed_state": "Not found",
-                    "testbed_reason": "Not found",
-                    "sidecar_ready": False,
-                    "sidecar_state": "Not found",
-                    "sidecar_reason": "Not found",
-                }
-            else:
-                current_status = {
-                    "pod_phase": testbed.status.pod_phase,
-                    "external_ip": testbed.external_ip,
-                    "testbed_ready": testbed.status.testbed.ready,
-                    "testbed_state": testbed.status.testbed.state,
-                    "testbed_reason": testbed.status.testbed.reason,
-                    "sidecar_ready": testbed.status.sidecar.ready,
-                    "sidecar_state": testbed.status.sidecar.state,
-                    "sidecar_reason": testbed.status.sidecar.reason,
-                }
-
-            if current_status != last_status:
-                print_status(current_status, time.time() - start_time)
-                last_status = current_status
-
-            if (
-                current_status["pod_phase"] == "Running"
-                and current_status["external_ip"]
-                and current_status["testbed_ready"]
-                and current_status["sidecar_ready"]
-            ):
-                finish_text = f"Testbed {testbed_id} is ready and can be reached on http://{current_status['external_ip']}:8000!"
-                if "IPython" in sys.modules:
-                    from IPython.display import clear_output
-
-                    print(finish_text)
-                else:
-                    logger.info(finish_text)
-                return testbed
-
-            time.sleep(interval)
-
-        if "IPython" in sys.modules:
-            print(
-                f"\nTimeout reached. Testbed {testbed_id} is not fully ready after {timeout} seconds."
-            )
-        else:
-            logger.error(
-                f"\nTimeout reached. Testbed {testbed_id} is not fully ready after {timeout} seconds."
-            )
-        return None
-
     def create_client(
         self,
         testbed_id: str,
+        instance_id: str,
         timeout: float = 30,
     ) -> TestbedClient:
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            testbed = self.get_testbed(testbed_id)
-            if (
-                testbed
-                and testbed.status.pod_phase == "Running"
-                and testbed.status.testbed.ready
-                and testbed.status.testbed.state == "running"
-                and testbed.status.sidecar.ready
-                and testbed.status.sidecar.state == "running"
-                and testbed.external_ip
-            ):
-                instance = load_swebench_instance(testbed.instance_id)
-                client = TestbedClient(
-                    testbed_id=testbed_id,
-                    host=testbed.external_ip,
-                    port=8000,
-                    instance=instance,
-                )
-                logger.info(f"Health checking client")
-                assert client.check_health(
-                    timeout=120
-                ), f"Health check on testbed failed"
-                logger.info(f"Health check successful, client ready")
-                return client
-            else:
-                logger.debug(
-                    f"Testbed {testbed_id} not ready yet. Status: {testbed.status}"
-                )
-            time.sleep(1)  # Wait for 1 second before checking again
-
-        raise TimeoutError(f"Timeout waiting for testbed {testbed_id} to be ready")
+        instance = load_swebench_instance(instance_id)
+        return TestbedClient(
+            testbed_id=testbed_id,
+            port=8000,
+            instance=instance,
+        )
 
     def delete_testbed(self, testbed_id: str, user_id: str | None = None):
         try:
-            response = self.batch_v1.delete_namespaced_job(
+            # Patch the service to remove finalizers
+            self.core_v1.patch_namespaced_service(
                 name=testbed_id,
                 namespace=self.namespace,
-                body=client.V1DeleteOptions(
-                    propagation_policy="Foreground", grace_period_seconds=0
-                ),
+                body={"metadata": {"finalizers": None}}
             )
 
+            # Delete the service
             self.core_v1.delete_namespaced_service(
                 name=testbed_id,
                 namespace=self.namespace,
@@ -297,6 +193,16 @@ class TestbedManager:
                 ),
             )
 
+            # Delete the job
+            response = self.batch_v1.delete_namespaced_job(
+                name=testbed_id,
+                namespace=self.namespace,
+                body=client.V1DeleteOptions(
+                    propagation_policy="Foreground", grace_period_seconds=0
+                ),
+            )
+
+            logger.info(f"Deleted job and service for {testbed_id}")
             return response
 
         except client.exceptions.ApiException as e:
@@ -348,15 +254,17 @@ class TestbedManager:
         return f"instance-{instance_id.replace('_', '-')}-configmap"
 
     def _create_job_manifest(
-        self, instance_id: str, testbed_id: str, user_id: str
+        self, instance: SWEbenchInstance, testbed_id: str, user_id: str
     ) -> str:
-        configmap_name = self._config_map_name(instance_id)
+        instance_id = instance.instance_id
+        test_spec = TestSpec.from_instance(instance)
 
+        # TODO: Set limits in test spec?
         if instance_id in high_cpu_instances:
             limit_cpu = "1.2"
             request_cpu = "1.0"
         else:
-            limit_cpu = "0.4"
+            limit_cpu = "1.2"
             request_cpu = "0.1"
 
         if instance_id.startswith("matplotlib"):
@@ -374,11 +282,11 @@ class TestbedManager:
             "user_id": user_id,
             "testbed_image": f"moatless.azurecr.io/sweb.eval.x86_64.{instance_id}",
             "sidecar_image": "moatless.azurecr.io/testbed-sidecar:latest",
-            "configmap_name": configmap_name,
             "limit_cpu": limit_cpu,
             "limit_memory": limit_memory,
             "request_cpu": request_cpu,
             "request_memory": request_memory,
+            "init_env_commands": test_spec.env_script_list
         }
         manifest_yaml = self.job_template.render(context)
         return yaml.safe_load(manifest_yaml)
@@ -488,12 +396,3 @@ class TestbedManager:
         }
         manifest_yaml = self.service_template.render(context)
         return yaml.safe_load(manifest_yaml)
-
-    def find_testbed_by_instance_id(
-        self, instance_id: str
-    ) -> Optional[TestbedDetailed]:
-        job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
-        for job in job_list.items:
-            if job.metadata.labels.get("instance-id") == instance_id:
-                return self.get_testbed(job.metadata.name)
-        return None

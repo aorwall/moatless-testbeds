@@ -7,11 +7,8 @@ import logging
 
 from testbed.container.kubernetes import KubernetesContainer
 from testbed.schema import (
-    RunEvaluationRequest,
     RunCommandsRequest,
-    GetExecutionResultRequest,
 )
-from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -21,18 +18,11 @@ def create_app():
 
     container = KubernetesContainer()
 
-    @lru_cache(maxsize=1)
     def check_container_reachability():
-        return container.is_reachable()
+        while not container.is_reachable():
+            time.sleep(0.1)
 
-    # Invalidate cache every 60 seconds
-    @app.before_request
-    def clear_cache():
-        if time.time() - clear_cache.last_cleared > 60:
-            check_container_reachability.cache_clear()
-            clear_cache.last_cleared = time.time()
-
-    clear_cache.last_cleared = time.time()
+        return True
 
     check_container_reachability()
 
@@ -70,22 +60,13 @@ def create_app():
             logger.exception(f"execute_command() Error during execution")
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/exec/<execution_id>", methods=["GET"])
-    def get_execution_status(execution_id: str):
+    @app.route("/exec", methods=["GET"])
+    def get_execution_status():
         try:
-            result = container.get_execution_status(execution_id)
+            result = container.get_execution_status()
             return jsonify(result.model_dump()), 200
         except Exception as e:
             logger.exception(f"get_execution_status() Error retrieving status")
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/exec", methods=["GET"])
-    def list_executed_commands():
-        try:
-            result = container.list_executed_commands()
-            return jsonify([summary.model_dump() for summary in result]), 200
-        except Exception as e:
-            logger.exception(f"list_executed_commands() Error listing commands")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/file", methods=["GET"])

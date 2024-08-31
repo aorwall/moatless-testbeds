@@ -19,7 +19,6 @@ from kubernetes import config as k8s_config
 
 from testbed.container.container import Container
 from testbed.schema import (
-    CommandStatusResponse,
     CommandExecutionResponse,
     CommandExecutionSummary,
 )
@@ -79,40 +78,7 @@ class KubernetesContainer(Container):
         return f"Container {self.container_name}:{self.pod_name}:{self.namespace}"
 
     def is_reachable(self, timeout: int = 10) -> bool:
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                result = self._exec(
-                    "echo 'Container is reachable'", timeout=5, retries=1
-                )
-                if result.exit_code == 0 and "Container is reachable" in result.output:
-                    logger.debug("Container is reachable")
-                    return True
-                else:
-                    logger.warning(f"Unexpected result: {result}")
-            except Exception as e:
-                logger.warning(f"Error checking container reachability: {e}")
-            time.sleep(1)
-
-        logger.error(
-            f"Container {self.pod_name} in namespace {self.namespace} is not reachable after {timeout} seconds"
-        )
-        return False
-
-    def is_pod_ready(self) -> bool:
-        try:
-            pod = self.core_v1.read_namespaced_pod(
-                name=self.pod_name, namespace=self.namespace
-            )
-            for condition in pod.status.conditions:
-                if condition.type == "Ready" and condition.status == "True":
-                    logger.info(f"Pod {self.pod_name} is ready")
-                    return True
-            logger.warning(f"Pod {self.pod_name} is not ready")
-            return False
-        except ApiException as e:
-            logger.error(f"Error checking pod readiness: {e}")
-            return False
+        return os.path.exists(os.path.join(self.shared_dir, f"started"))
 
     def _exec(
         self, cmd: str, timeout: int | None = None, retries: int = 3, delay: int = 2
@@ -190,96 +156,54 @@ class KubernetesContainer(Container):
     def execute(
         self, commands: list[str], timeout: int = 60
     ) -> CommandExecutionResponse:
-        execution_id = str(uuid.uuid4())
-        commands_file = f"/tmp/{execution_id}_cmd.sh"
+        output_file = os.path.join(self.shared_dir, f"cmd_output.txt")
+        complete_file = os.path.join(self.shared_dir, f"complete_cmd")
+        commands_file = os.path.join(self.shared_dir, f"run_cmd.sh")
+
+        if os.path.exists(output_file) and not os.path.exists(complete_file):
+            logger.warning("Previous command execution is still running")
+            return CommandExecutionResponse(
+                status="running",
+                output=self.read_from_shared_volume("cmd_output.txt"),
+            )
+
+        if os.path.exists(output_file):
+            os.remove(output_file)
+
+        if os.path.exists(complete_file):
+            os.remove(complete_file)
 
         # Create a shell script with the commands
         script_content = "#!/bin/bash\n" + "\n".join(commands)
         self.write_file(commands_file, script_content.encode("utf-8"))
+        os.chmod(commands_file, 0o755)
 
-        # Make the script executable
-        self._exec(f"chmod +x {commands_file}")
+        start_time = datetime.now()
+        while not os.path.exists(output_file):
+            if (datetime.now() - start_time).seconds > 5:
+                raise Exception(f"No output file found on {output_file} after 5 seconds. This indicates that the command was never executed.")
 
-        try:
-            # Execute the script with the built-in timeout
-            result = stream(
-                self.core_v1.connect_get_namespaced_pod_exec,
-                self.pod_name,
-                self.namespace,
-                container=self.container_name,
-                command=["/bin/bash", commands_file],
-                stderr=True,
-                stdin=False,
-                stdout=True,
-                tty=False,
-                _preload_content=False,
-                _request_timeout=timeout,
-            )
-
-            output = ""
-            while result.is_open():
-                result.update(timeout=1)
-                if result.peek_stdout():
-                    output += result.read_stdout()
-                if result.peek_stderr():
-                    output += result.read_stderr()
-
-            status = "completed"
-        except Exception as e:
-            logger.error(f"Command execution failed or timed out: {str(e)}")
-            output = f"Error: {str(e)}"
-            status = "failed"
-
-        # Clean up the temporary script
-        self._exec(f"rm {commands_file}")
+            time.sleep(0.1)
 
         return CommandExecutionResponse(
-            execution_id=execution_id,
-            status=status,
-            output=output,
+            status="running",
         )
 
-    def get_execution_status(self, execution_id: str) -> CommandExecutionResponse:
-        complete_file = os.path.join(self.shared_dir, f"{execution_id}_complete.txt")
-        output_file = os.path.join(self.shared_dir, f"{execution_id}_output.txt")
+    def get_execution_status(self) -> CommandExecutionResponse:
+        commands_file = os.path.join(self.shared_dir, f"run_cmd.sh")
+        complete_file = os.path.join(self.shared_dir, f"complete_cmd")
 
         if os.path.exists(complete_file):
             status = "completed"
-        else:
+        elif os.path.exists(commands_file):
             status = "running"
+        else:
+            status = "idle"
 
         return CommandExecutionResponse(
-            execution_id=execution_id,
             status=status,
-            output=self.read_from_shared_volume(f"{execution_id}_output.txt"),
+            output=self.read_from_shared_volume(f"cmd_output.txt"),
         )
-
-    def list_executed_commands(self) -> List[CommandExecutionSummary]:
-        commands_dir = os.path.join(self.shared_dir, "commands")
-        summaries = []
-
-        for filename in os.listdir(commands_dir):
-            if filename.endswith("_cmd.txt"):
-                execution_id = filename.split("_")[0]
-                complete_file = os.path.join(
-                    commands_dir, f"{execution_id}_complete.txt"
-                )
-                output_file = os.path.join(commands_dir, f"{execution_id}_output.txt")
-
-                status = "completed" if os.path.exists(complete_file) else "running"
-
-                with open(os.path.join(commands_dir, filename), "r") as cmd_file:
-                    commands = cmd_file.read().splitlines()
-
-                summary = CommandExecutionSummary(
-                    execution_id=execution_id,
-                    status=status,
-                    commands=commands,
-                    output_file=output_file,
-                )
-                summaries.append(summary)
-
-        return summaries
 
     def is_executing(self):
         if not self.started_at:
@@ -296,11 +220,11 @@ class KubernetesContainer(Container):
 
     def read_from_shared_volume(self, filename: str) -> str:
         shared_path = os.path.join(self.shared_dir, filename)
-        logger.info(f"Reading from shared volume: {shared_path}")
+        logger.debug(f"Reading from shared volume: {shared_path}")
         try:
             with open(shared_path, "r") as file:
                 data = file.read()
-            logger.info(f"Successfully read from {shared_path}")
+            logger.debug(f"Successfully read from {shared_path}")
             return data
         except Exception as e:
             logger.exception(f"Error reading from disk")

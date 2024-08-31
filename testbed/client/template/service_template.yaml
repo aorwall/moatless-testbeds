@@ -7,6 +7,8 @@ spec:
   selector:
     job-name: {{ testbed_id }}
   type: LoadBalancer
+  externalTrafficPolicy: Local
+  sessionAffinity: ClientIP
   ports:
     - name: http
       port: 8000

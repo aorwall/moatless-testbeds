@@ -22,13 +22,6 @@ class ResolvedStatus(Enum):
     FULL = "RESOLVED_FULL"
 
 
-class TestStatus(Enum):
-    FAILED = "FAILED"
-    PASSED = "PASSED"
-    SKIPPED = "SKIPPED"
-    ERROR = "ERROR"
-
-
 TEST_PYTEST = "pytest --no-header -rA --tb=no -p no:cacheprovider"
 TEST_PYTEST_VERBOSE = "pytest -rA --tb=long -p no:cacheprovider"
 TEST_ASTROPY_PYTEST = "pytest -rA -vv -o console_output_style=classic --tb=no"
@@ -950,6 +943,7 @@ INSTALL_FAIL = ">>>>> Init Failed"
 INSTALL_PASS = ">>>>> Init Succeeded"
 INSTALL_TIMEOUT = ">>>>> Init Timed Out"
 RESET_FAILED = ">>>>> Reset Failed"
+RUN_TESTS = ">>>>> Run tests"
 TESTS_ERROR = ">>>>> Tests Errored"
 TESTS_FAILED = ">>>>> Some Tests Failed"
 TESTS_PASSED = ">>>>> All Tests Passed"

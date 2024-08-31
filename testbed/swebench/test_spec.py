@@ -3,9 +3,9 @@ import json
 import platform
 import re
 from dataclasses import dataclass
-from typing import Any, Union, Tuple
+from typing import Any, Union, Tuple, Optional
 
-from testbed.schema import SWEbenchInstance, EvaluationResult, TestsStatus, TestResult
+from testbed.schema import SWEbenchInstance, EvaluationResult, TestsStatus, TestResult, EvalTestResult
 from testbed.swebench.constants import (
     MAP_REPO_TO_INSTALL,
     MAP_REPO_VERSION_TO_SPECS,
@@ -20,6 +20,7 @@ from testbed.swebench.constants import (
     FAIL_TO_PASS,
     PASS_TO_PASS,
     ResolvedStatus,
+    RUN_TESTS,
 )
 from testbed.swebench.grading import get_eval_tests_report, get_resolution_status
 from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER
@@ -50,6 +51,7 @@ class TestSpec:
 
     @classmethod
     def from_instance(cls, instance: SWEbenchInstance) -> "TestSpec":
+        assert instance, "Instance is required"
         if isinstance(instance, cls):
             return instance
 
@@ -119,6 +121,10 @@ class TestSpec:
         else:
             raise ValueError(f"Invalid architecture: {self.arch}")
 
+    @property
+    def reset_commands(self):
+        return [f"git reset --hard {self.base_commit}"]
+
     def patch_commands(self, patch_filepath: str) -> list[str]:
         return [
             f"git apply -v {patch_filepath}",
@@ -127,16 +133,13 @@ class TestSpec:
             f"    echo 'Trying again with patch command...'",
             f"    patch --batch --fuzz=5 -p1 -i {patch_filepath}",
             f"    if [ $? -ne 0 ]; then",
-            f"        echo 'APPLY_PATCH_FAIL:'",
-            f"        patch --batch --fuzz=5 -p1 -i {patch_filepath}",
+            f"        echo '{APPLY_PATCH_FAIL}:'",
             f"        exit 1",
             f"    else",
-            f"        echo 'APPLY_PATCH_PASS:'",
-            f"        patch --batch --fuzz=5 -p1 -i {patch_filepath}",
+            f"        echo '{APPLY_PATCH_PASS}:'",
             f"    fi",
             f"else",
-            f"    echo 'APPLY_PATCH_PASS:'",
-            f"    git apply -v {patch_filepath}",
+            f"    echo '{APPLY_PATCH_PASS}:'",
             f"fi",
         ]
 
@@ -185,23 +188,20 @@ class TestSpec:
             eval_commands.append(self.specs["install"])
         return eval_commands
 
-    def get_test_directives(self) -> list:
-        """
-        Get test directives from the test_patch of a task instance
-
-        Returns:
-            directives (list): List of test directives
-        """
-
-        # Get test directives from test patch and remove non-test files
+    def get_test_patch_files(self) -> list:
         diff_pat = r"diff --git a/.* b/(.*)"
         test_patch = self.test_patch
-        directives = re.findall(diff_pat, test_patch)
+        test_files = re.findall(diff_pat, test_patch)
+        return test_files
+
+    def test_script(self, test_files: Optional[list[str]] = None) -> list[str]:
+        if not test_files:
+            test_files = self.get_test_patch_files()
+
         directives = [
-            d for d in directives if not any(d.endswith(ext) for ext in NON_TEST_EXTS)
+            d for d in test_files if not any(d.endswith(ext) for ext in NON_TEST_EXTS)
         ]
 
-        # For Django tests, remove extension + "tests/" prefix and convert slashes to dots (module referencing)
         if self.repo == "django/django":
             directives_transformed = []
             for d in directives:
@@ -211,16 +211,16 @@ class TestSpec:
                 directives_transformed.append(d)
             directives = directives_transformed
 
-        return directives
-
-    @property
-    def test_script(self) -> str:
-        return " ".join(
+        test_command = " ".join(
             [
                 self.specs["test_cmd"],
-                *self.get_test_directives(),
+                *directives,
             ]
         )
+        return [
+            f"echo '{RUN_TESTS}'",
+            test_command
+        ]
 
     @property
     def eval_script_list(self) -> list[str]:
@@ -228,13 +228,13 @@ class TestSpec:
         reset_tests_command = f"git checkout {self.base_commit} {' '.join(test_files)}"
         HEREDOC_DELIMITER = "EOF_114329324912"
         apply_test_patch_command = f"git apply -v - <<'{HEREDOC_DELIMITER}'\n{self.test_patch}\n{HEREDOC_DELIMITER}"
+        directives = self.get_test_patch_files()
+        test_script = self.test_script(directives)
 
-        eval_commands = self.env_script_list + [
-            reset_tests_command,
-            apply_test_patch_command,
-            self.test_script,
-            reset_tests_command,
-        ]
+        eval_commands = ([reset_tests_command, apply_test_patch_command] +
+                         test_script +
+                         [reset_tests_command])
+
         return eval_commands
 
     def get_pred_report(self, content: str) -> TestsStatus:
@@ -251,57 +251,33 @@ class TestSpec:
             report (EvaluationResult): report of metrics
         """
 
-        eval_sm, found = self.get_logs_eval(content)
-        if not found:
-            return TestsStatus(status=ResolvedStatus.NO)
-
+        test_result = self.parse_logs(content)
         eval_ref = {
             KEY_INSTANCE_ID: self.instance_id,
             FAIL_TO_PASS: self.fail_to_pass,
             PASS_TO_PASS: self.pass_to_pass,
         }
 
-        report = get_eval_tests_report(eval_sm, eval_ref)
+        report = get_eval_tests_report(test_result, eval_ref)
         status = get_resolution_status(report)
 
         return TestsStatus(
             status=status,
-            fail_to_pass=TestResult(**report[FAIL_TO_PASS]),
-            pass_to_pass=TestResult(**report[PASS_TO_PASS]),
+            fail_to_pass=EvalTestResult(**report[FAIL_TO_PASS]),
+            pass_to_pass=EvalTestResult(**report[PASS_TO_PASS]),
         )
 
-    def get_logs_eval(self, content: str | None = None) -> tuple[dict[str, str], bool]:
+    def parse_logs(self, content: str | None = None) -> list[TestResult]:
         """
         Retrieve evaluation results for a task instance from its corresponding log file
-
-        Args:
-            content (str): log file content
-        Returns:
-            bool: whether the patch applied successfully
-            dict: status map
-
         """
+
         log_parser = MAP_REPO_TO_PARSER[self.repo]
+        content = content.split(f"{RUN_TESTS}\n")[-1]
+        results = log_parser(content)
 
-        if (
-            any(
-                [
-                    x in content
-                    for x in [
-                        APPLY_PATCH_FAIL,
-                        RESET_FAILED,
-                        TESTS_ERROR,
-                        TESTS_TIMEOUT,
-                        "Failed to reset task environment",
-                    ]
-                ]
-            )
-            or "applied patch" not in content.lower()
-        ):
-            # Eval patch was not applied successfully
-            return {}, False
+        for result in results:
+            if result.file_path and result.file_path.startswith("/testbed/"):
+                result.file_path = result.file_path[len("/testbed/"):]
 
-        # Get status map of evaluation results
-        content = content.split(f"{APPLY_PATCH_PASS} (pred)")[-1]
-
-        return log_parser(content), True
+        return results

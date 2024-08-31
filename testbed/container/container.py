@@ -42,25 +42,12 @@ class Container(ABC):
         pass
 
     @abstractmethod
-    def get_execution_status(self, execution_id: str) -> CommandExecutionResponse:
+    def get_execution_status(self) -> CommandExecutionResponse:
         """
-        Get the status of a previously executed command.
-
-        Args:
-            execution_id (str): Unique identifier for the execution.
+        Get the status of currently executed command.
 
         Returns:
             CommandExecutionResponse: Response containing execution status and details.
-        """
-        pass
-
-    @abstractmethod
-    def list_executed_commands(self) -> List[CommandExecutionSummary]:
-        """
-        List all previously executed commands.
-
-        Returns:
-            List[CommandExecutionSummary]: List of summaries for executed commands.
         """
         pass
 
