@@ -3,6 +3,7 @@ import sys
 import time
 from time import sleep
 from typing import Tuple, List, Optional
+import uuid
 
 import requests
 import json
@@ -16,8 +17,9 @@ from testbed.schema import (
     RunCommandsRequest,
     CommandExecutionResponse,
     CommandExecutionSummary,
+    CommandExecutionSummary,
     SWEbenchInstance,
-    TestResult, TestbedDetailed, TestbedStatusDetailed, ContainerStatus,
+    TestResult, TestbedDetailed, TestbedStatusDetailed, ContainerStatus, TestRunResponse,
 )
 from testbed.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL
 
@@ -34,21 +36,27 @@ class TestbedClient:
         instance: SWEbenchInstance,
         port: int = 8000,
         namespace: str = "testbed-dev",
+        testbed_namespace: str = "testbed-dev",
         log_dir: str | None = None,
         test_spec: TestSpec | None = None,
         startup_timeout=600,
+        ignored_tests: dict[str, list[str]] = {},
+        in_cluster: bool = False,
     ):
         assert testbed_id, "Testbed ID is required"
         assert instance, "SWE-bench instance is required"
 
         self.testbed_id = testbed_id
         self.namespace = namespace
+        self.testbed_namespace = testbed_namespace
 
         self.core_v1 = client.CoreV1Api()
         self.batch_v1 = client.BatchV1Api()
 
         self.hostname = None
         self.port = port
+
+        self.ignored_tests = ignored_tests
 
         if log_dir:
             self.log_dir = f"{log_dir}/{testbed_id}" if log_dir else None
@@ -65,6 +73,8 @@ class TestbedClient:
         else:
             self.test_spec = TestSpec.from_instance(self.instance)
 
+        self.in_cluster = in_cluster
+
     def wait_until_ready(self, timeout: int | None = None, interval = 1):
         start_time = time.time()
         last_status = {}
@@ -75,7 +85,7 @@ class TestbedClient:
             output = [
                 f"Testbed ID: {self.testbed_id}",
                 f"Pod Phase: {status['pod_phase']}",
-                f"External IP: {status['external_ip'] or 'Not assigned yet'}",
+                f"External IP: {status['external_ip'] or 'Not assigned yet'}" if not self.in_cluster else "Not applicable",
                 "Testbed Container:",
                 f"  Ready: {status['testbed_ready']}",
                 f"  State: {status['testbed_state']}",
@@ -128,7 +138,7 @@ class TestbedClient:
 
             if (
                 current_status["pod_phase"] == "Running"
-                and current_status["external_ip"]
+                and (current_status["external_ip"] or self.in_cluster)
                 and current_status["testbed_ready"]
                 and current_status["sidecar_ready"]
             ):
@@ -137,7 +147,7 @@ class TestbedClient:
                     response = requests.get(f"{base_url}/health", timeout=10)
                     data = response.json()
                     if data.get("status") == "OK":
-                        finish_text = f"Testbed {self.testbed_id} is ready and can be reached on http://{current_status['external_ip']}:8000!"
+                        finish_text = f"Testbed {self.testbed_id} is ready and can be reached on {base_url}!"
                         if "IPython" in sys.modules:
                             from IPython.display import clear_output
 
@@ -163,10 +173,16 @@ class TestbedClient:
         return None
 
     def _create_base_url(self, hostname: str, port: int):
+        if self.in_cluster:
+            return f"http://{self.testbed_id}.{self.namespace}.svc.cluster.local:{self.port}"
+
         return f"http://{hostname}:{port}"
 
     @property
     def base_url(self) -> str | None:
+        if self.in_cluster:
+            return f"http://{self.testbed_id}.{self.namespace}.svc.cluster.local:{self.port}"
+        
         if self.hostname:
             return self._create_base_url(self.hostname, self.port)
 
@@ -191,12 +207,13 @@ class TestbedClient:
             status = self._read_testbed_status_detailed(job.metadata.name)
             if status:
                 external_ip = None
-                try:
-                    external_ip = self._get_service_external_ip()
-                except ValueError:
-                    logger.debug(
-                        f"External IP not yet available for testbed {self.testbed_id}"
-                    )
+                if not self.in_cluster:
+                    try:
+                        external_ip = self._get_service_external_ip()
+                    except ValueError:
+                        logger.debug(
+                            f"External IP not yet available for testbed {self.testbed_id}"
+                        )
 
                 return TestbedDetailed(
                     testbed_id=job.metadata.name,
@@ -211,7 +228,7 @@ class TestbedClient:
         self, job_name: str
     ) -> Optional[TestbedStatusDetailed]:
         pod_list = self.core_v1.list_namespaced_pod(
-            namespace=self.namespace, label_selector=f"job-name={job_name}"
+            namespace=self.testbed_namespace, label_selector=f"job-name={job_name}"
         )
         if pod_list.items:
             pod = pod_list.items[0]
@@ -240,7 +257,7 @@ class TestbedClient:
 
     def _get_service_external_ip(self) -> str:
         service = self.core_v1.read_namespaced_service(
-            name=self.testbed_id, namespace=self.namespace
+            name=self.testbed_id, namespace=self.testbed_namespace
         )
         if service.status.load_balancer.ingress:
             return service.status.load_balancer.ingress[0].ip
@@ -273,11 +290,11 @@ class TestbedClient:
     def _get_job(self):
         try:
             return self.batch_v1.read_namespaced_job(
-                name=self.testbed_id, namespace=self.namespace
+                name=self.testbed_id, namespace=self.testbed_namespace
             )
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                logger.info(f"Job {self.testbed_id} not found in namespace {self.namespace}.")
+                logger.info(f"Job {self.testbed_id} not found in namespace {self.testbed_namespace}.")
                 return None
             else:
                 raise
@@ -346,12 +363,14 @@ class TestbedClient:
 
     def apply_patch(self, patch: str) -> str:
         patch_filepath = f"/shared/patch.diff"
+        if not patch.endswith('\n'):
+            patch += '\n'
         self.save_file(patch_filepath, patch)
         response = self.execute(self.test_spec.patch_commands(patch_filepath))
 
         if APPLY_PATCH_FAIL in response.output:
             logger.error(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.output}")
-            raise RuntimeError("Failed to apply patch")
+            raise RuntimeError(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.output}")
 
         response = self.execute("git diff")
         logger.debug(f"Diff after patch: \n{response.output}")
@@ -362,10 +381,11 @@ class TestbedClient:
             self,
             test_files: list[str] | None = None,
             patch: str | None = None
-    ) -> Tuple[List[TestResult], str]:
-        logger.info(f"run_tests: {test_files} and patch length {len(patch) if patch else 0}")
+    ) -> TestRunResponse:
+        logger.info(f"run_tests: test_files={test_files}")
 
         if patch:
+            self.reset()
             self.apply_patch(patch)
 
         # TODO: Run self.test_spec.env_script_list after patching?
@@ -373,9 +393,35 @@ class TestbedClient:
         commands.extend(self.test_spec.test_script(test_files))
         response = self.execute(commands)
         test_result = self.test_spec.parse_logs(response.output)
-        return test_result, response.output
 
-    def run_evaluation(self, run_id: str, patch: str | None = None) -> EvaluationResult:
+        filtered_test_result = []
+
+        statuses = {}
+
+        ignored_tests = 0
+        for test in test_result:
+            if test.method in self.ignored_tests.get(test.file_path, []):
+                ignored_tests += 1
+                continue
+
+            filtered_test_result.append(test)
+
+            if test.status not in statuses:
+                statuses[test.status] = 0
+
+            statuses[test.status] += 1
+
+        if ignored_tests:
+            logger.info(f"Did run {len(test_result)} tests, ignore {ignored_tests} tests. {statuses}")
+        else:
+            logger.info(f"Did run {len(test_result)} tests. {statuses}")
+
+        return TestRunResponse(
+            test_results=filtered_test_result,
+            output=response.output
+        )
+
+    def run_evaluation(self, run_id: str | None = None, patch: str | None = None) -> EvaluationResult:
         if not self.instance:
             raise ValueError("SWE-bench instance not set")
 
@@ -384,8 +430,12 @@ class TestbedClient:
                 f"Running evaluation for instance {self.instance.instance_id} with gold prediction"
             )
             patch = self.instance.patch
+        else:
+            logger.info(f"Running evaluation for instance {self.instance.instance_id} with patch")
 
         self.reset()
+
+        run_id = run_id or str(uuid.uuid4())
 
         patch_filepath = f"/shared/{run_id}/patch.diff"
         self.save_file(patch_filepath, patch)
@@ -467,7 +517,7 @@ class TestbedClient:
         try:
             response = self.batch_v1.delete_namespaced_job(
                 name=self.testbed_id,
-                namespace=self.namespace,
+                namespace=self.testbed_namespace,
                 body=client.V1DeleteOptions(
                     propagation_policy="Foreground", grace_period_seconds=0
                 ),
@@ -475,7 +525,7 @@ class TestbedClient:
 
             self.core_v1.delete_namespaced_service(
                 name=self.testbed_id,
-                namespace=self.namespace,
+                namespace=self.testbed_namespace,
                 body=client.V1DeleteOptions(
                     propagation_policy="Foreground", grace_period_seconds=0
                 ),

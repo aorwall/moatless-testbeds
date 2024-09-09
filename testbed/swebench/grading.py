@@ -21,6 +21,9 @@ from testbed.schema import TestResult, TestStatus
 from typing import Dict, List, Any
 
 
+IGNORE_TESTS = ["[100%]", "[", "[100%]------------------------------"]
+
+
 # MARK: Utility functions
 def get_file_name_from_lp(x: str) -> str:
     return x.rsplit("/", 1)[-1]
@@ -85,6 +88,12 @@ def get_eval_tests_report(
             p2p_success.append(test_case)
         else:
             p2p_failure.append(test_case)
+
+    # Remove test signatures from the original dataset as they doesn't really make sense and must be a resut of incorrect parsing
+    f2p_success = [x for x in f2p_success if x not in IGNORE_TESTS]
+    f2p_failure = [x for x in f2p_failure if x not in IGNORE_TESTS]
+    p2p_success = [x for x in p2p_success if x not in IGNORE_TESTS]
+    p2p_failure = [x for x in p2p_failure if x not in IGNORE_TESTS]
 
     results = {
         FAIL_TO_PASS: {

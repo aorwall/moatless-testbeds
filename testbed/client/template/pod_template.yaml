@@ -10,7 +10,7 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: testbed-service-account
+      serviceAccountName: testbed-sa
       containers:
       - name: testbed
         image: {{ testbed_image }}
@@ -66,6 +66,7 @@ spec:
       - name: sidecar
         image: {{ sidecar_image }}
         imagePullPolicy: Always
+        serviceAccountName: testbed-sidecar-sa
         ports:
         - containerPort: 8000
         livenessProbe:
@@ -106,7 +107,7 @@ spec:
               name: testbed-secrets
               key: AZURE_STORAGE_CONNECTION_STRING
       nodeSelector:
-        pool: testbed-dev
+        node-purpose: testbed
       restartPolicy: OnFailure
       volumes:
       - name: shared-volume

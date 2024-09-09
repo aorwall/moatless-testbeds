@@ -3,13 +3,14 @@ import logging
 import re
 from enum import Enum
 
-from testbed.schema import TestResult, TestStatus
-
+from testbed.schema import TestResult, TestStatus, TraceItem
 
 logger = logging.getLogger(__name__)
 
 def parse_log_pytest(log: str) -> list[TestResult]:
     test_results = []
+    test_errors = []
+
     failure_outputs = {}
     current_failure = None
     current_section = []
@@ -18,24 +19,41 @@ def parse_log_pytest(log: str) -> list[TestResult]:
 
     test_summary_phase = False
     failures_phase = False
+    errors_phase = False
+    error_patterns = [
+        (re.compile(r'ERROR collecting (.*) ___.*'), 'collection'),
+        (re.compile(r'ERROR at setup of (.*) ___.*'), 'setup'),
+        (re.compile(r'ERROR at teardown of (.*) ___.*'), 'teardown'),
+        (re.compile(r'ERROR (.*) ___.*'), 'general')
+    ]
 
     for line in log.split("\n"):
 
         if "short test summary info" in line:
             test_summary_phase = True
             failures_phase = False
+            errors_phase = False
+            # Only include results for last test summary for now
+            test_results = []
             continue
 
         if "=== FAILURES ===" in line:
             test_summary_phase = False
             failures_phase = True
+            errors_phase = False
+            continue
+
+        if "=== ERRORS ===" in line:
+            test_summary_phase = False
+            failures_phase = True
+            errors_phase = True
             continue
 
         # Remove ANSI codes and escape characters
         line = re.sub(r"\[(\d+)m", "", line)
         line = line.translate(str.maketrans("", "", escapes))
 
-        if any([line.startswith(x.value) for x in TestStatus]) or any([line.endswith(x.value) for x in TestStatus]):
+        if not failures_phase and any([line.startswith(x.value) for x in TestStatus]) or any([line.endswith(x.value) for x in TestStatus]):
             if line.startswith(TestStatus.FAILED.value):
                 line = line.replace(" - ", " ")
 
@@ -74,13 +92,21 @@ def parse_log_pytest(log: str) -> list[TestResult]:
                     main, option = has_option.groups()
                     if option.startswith("/") and not option.startswith("//") and "*" not in option:
                         option = "/" + option.split("/")[-1]
-                    full_name = f"{main}[{option}]"
+
+                    # In the SWE-Bench dataset only the first word in an option is included for some reason...
+                    if option and " " in option:
+                        option = option.split()[0]
+                        full_name = f"{main}[{option}"
+                    else:
+                        full_name = f"{main}[{option}]"
 
                 parts = full_name.split("::")
                 if len(parts) > 1:
                     file_path = parts[0]
                     method = ".".join(parts[1:])
-                    method = method.split()[0]
+
+                    if not has_option:
+                        method = method.split()[0]
                 else:
                     file_path, method = None, None
 
@@ -91,30 +117,59 @@ def parse_log_pytest(log: str) -> list[TestResult]:
                 method=method
             ))
 
-        if failures_phase:
-            if line.startswith("_____"):
-                if current_failure and current_section:
-                    failure_outputs[current_failure].extend(current_section)
-                current_failure = line.strip("_ ")
+        error_match = None
+        error_type = None
+        for pattern, err_type in error_patterns:
+            match = pattern.search(line)
+            if match:
+                error_match = match
+                error_type = err_type
+                break
+
+        if error_match:
+            if current_failure and current_section:
+                failure_outputs[current_failure].extend(current_section)
+
+            if error_match.group(1).endswith(".py"):
+                current_failure = f"{error_type.capitalize()} error in {error_match.group(1)}"
+                test_errors.append(TestResult(
+                    status=TestStatus.ERROR,
+                    name=current_failure,
+                    file_path=error_match.group(1)
+                ))
                 failure_outputs[current_failure] = []
                 current_section = []
-            elif line.startswith("====="):
-                if current_failure and current_section:
-                    failure_outputs[current_failure].extend(current_section)
-                current_failure = None
+            else:
+                current_failure = error_match.group(1)
+                failure_outputs[current_failure] = []
                 current_section = []
-            elif current_failure:
-                current_section.append(line)
+        elif line.startswith("_____"):
+            if current_failure and current_section:
+                failure_outputs[current_failure].extend(current_section)
+            current_failure = line.strip("_ ")
+            failure_outputs[current_failure] = []
+            current_section = []
+        elif line.startswith("====="):
+            if current_failure and current_section:
+                failure_outputs[current_failure].extend(current_section)
+            current_failure = None
+            current_section = []
+        elif current_failure:
+            current_section.append(line)
 
     # Add the last section if exists
     if current_failure and current_section:
         failure_outputs[current_failure].extend(current_section)
 
-    # Add failure outputs to corresponding failed tests
+    test_results.extend(test_errors)
+
+    # Add failure outputs to corresponding failed or error tests
     for test in test_results:
-        if test.status == TestStatus.FAILED:
-            if test.method in failure_outputs:
-                test.failure_output = "\n".join(failure_outputs[test.method])
+        if test.method in failure_outputs:
+            test.failure_output = "\n".join(failure_outputs[test.method])
+
+        if test.name in failure_outputs:
+            test.failure_output = "\n".join(failure_outputs[test.name])
 
     return test_results
 
@@ -126,9 +181,8 @@ def parse_log_django(log: str) -> list[TestResult]:
     current_test = None
     current_method = None
     current_file_path = None
-    expect_status = False
+    current_traceback_item: TraceItem | None = None
     current_output = []
-    current_traceback = []
 
     test_pattern = re.compile(r'^(\w+) \(([\w.]+)\)')
 
@@ -186,38 +240,19 @@ def parse_log_django(log: str) -> list[TestResult]:
             continue
 
     for line in lines:
-        line = line.strip()
-
         if line.startswith("===================="):
             if current_method and current_output and current_method in test_status_map:
                 test_status_map[current_method].failure_output = "\n".join(current_output)
-                if current_traceback:
-                    file_path = extract_file_path(current_traceback)
-                    if file_path and (
-                            not test_status_map[current_method].file_path or
-                            not file_path.endswith(test_status_map[current_method].file_path)
-                    ):
-                        logger.warning(
-                            f"File path mismatch: {file_path} vs {test_status_map[current_method].file_path}, will use {file_path}")
-                        test_status_map[current_method].file_path = file_path
-            current_method = None
-            current_output = [line]
-            current_traceback = []
-        elif line.startswith("--------------------------") and current_traceback:
-            if current_method and current_output and current_method in test_status_map:
-                test_status_map[current_method].failure_output = "\n".join(current_output)
-                if current_traceback:
-                    file_path = extract_file_path(current_traceback)
-                    if file_path and (
-                            not test_status_map[current_method].file_path or
-                            not file_path.endswith(test_status_map[current_method].file_path)
-                    ):
-                        logger.warning(
-                            f"File path mismatch: {file_path} vs {test_status_map[current_method].file_path}, will use {file_path}")
-                        test_status_map[current_method].file_path = file_path
             current_method = None
             current_output = []
-            current_traceback = []
+            current_traceback_item = None
+        elif line.startswith("--------------------------") and current_traceback_item:
+            if current_method and current_output and current_method in test_status_map:
+                test_status_map[current_method].failure_output = "\n".join(current_output)
+
+            current_method = None
+            current_output = []
+            current_traceback_item = None
         elif line.startswith("ERROR: ") or line.startswith("FAIL: "):
             current_test = line.split(": ", 1)[1].strip()
             match = test_pattern.match(current_test)
@@ -231,39 +266,82 @@ def parse_log_django(log: str) -> list[TestResult]:
                 logger.warning(f"Failed to match test pattern: {current_test}")
                 current_method = current_test
 
+        elif len(test_status_map) == 0 and "Traceback (most recent call last)" in line:
+            # If traceback is logged but not tests we expect syntax error
+            current_method = "traceback"
+            test_status_map[current_method] = TestResult(status=TestStatus.ERROR, name=current_method, method=current_method)
+
+        elif current_method and not line.startswith("--------------------------"):
             current_output.append(line)
-        elif current_method:
-            current_output.append(line)
-            if line.startswith("File "):
-                current_traceback.append(line)
+            file_path, line_number, method_name = parse_traceback_line(line)
+            if file_path:
+                if current_traceback_item and current_method in test_status_map:
+                    test_status_map[current_method].stacktrace.append(current_traceback_item)
+
+                current_traceback_item = TraceItem(
+                    file_path=file_path,
+                    line_number=line_number,
+                    method=method_name
+                )
+            elif current_traceback_item:
+                if current_traceback_item.output:
+                    current_traceback_item.output += "\n"
+                current_traceback_item.output += line
 
     # Handle the last test case
     if current_method and current_output and current_method in test_status_map:
         test_status_map[current_method].failure_output = "\n".join(current_output)
-        if current_traceback:
-            file_path = extract_file_path(current_traceback)
-            if file_path and (
-                    not test_status_map[current_method].file_path or
-                    not file_path.endswith(test_status_map[current_method].file_path)
-            ):
-                logger.warning(f"File path mismatch: {file_path} vs {test_status_map[current_method].file_path}, will use {file_path}")
-                test_status_map[current_method].file_path = file_path
-
-    for test in test_status_map.values():
-        if test.file_path:
-            extracted_path = extract_file_path(test.failure_output.split('\n') if test.failure_output else [])
-            if extracted_path and not extracted_path.endswith(test.file_path):
-                test.file_path = extracted_path
-        else:
-            test.file_path = current_file_path
-
+        if current_traceback_item:
+            test_status_map[current_method].stacktrace.append(current_traceback_item)
     return list(test_status_map.values())
 
-def extract_file_path(traceback_lines):
-    for line in traceback_lines:
-        if line.startswith("File "):
-            return line.split('"')[1]
-    return None
+
+def parse_traceback_line(line) -> tuple[str, int, str] | tuple[None, None, None]:
+    pattern = r'File "([^"]+)", line (\d+), in (\S+)'
+
+    match = re.search(pattern, line)
+
+    if match:
+        file_path = match.group(1)
+        if file_path.startswith("/testbed/"):
+            file_path = file_path.replace("/testbed/", "")
+        line_number = int(match.group(2))
+        method_name = match.group(3)
+
+        return file_path, line_number, method_name
+    else:
+        return None, None, None
+
+def parse_traceback(log: str) -> TestResult | None:
+    current_trace_item = None
+    stacktrace = []
+
+    for line in log.split("\n"):
+        file_path, line_number, method_name = parse_traceback_line(line)
+        if file_path:
+            current_trace_item = TraceItem(
+                file_path=file_path,
+                line_number=line_number,
+                method=method_name
+            )
+            stacktrace.append(current_trace_item)
+        elif current_trace_item:
+            if current_trace_item.output:
+                current_trace_item.output += "\n"
+            current_trace_item.output += line
+
+    if not current_trace_item:
+        return None
+
+    return TestResult(
+        status=TestStatus.ERROR,
+        name="traceback",
+        method=current_trace_item.method,
+        file_path=current_trace_item.file_path,
+        failure_output=log,
+        stacktrace=stacktrace
+    )
+
 
 
 
@@ -307,6 +385,9 @@ def parse_log_sympy(log: str) -> list[TestResult]:
         line = line.strip()
         if line.startswith("test_"):
             split_line = line.split()
+            if len(split_line) < 2:
+                continue
+
             if split_line[1] == "E":
                 test = split_line[0].strip()
                 test_results[test] = TestResult(status=TestStatus.ERROR, name=test, method=test)
@@ -316,6 +397,9 @@ def parse_log_sympy(log: str) -> list[TestResult]:
             if split_line[1] == "ok":
                 test = split_line[0].strip()
                 test_results[test] = TestResult(status=TestStatus.PASSED, name=test, method=test)
+            if split_line[1] == "s":
+                test = split_line[0].strip()
+                test_results[test] = TestResult(status=TestStatus.SKIPPED, name=test, method=test)
 
     current_method = None
     current_file = None
@@ -332,6 +416,12 @@ def parse_log_sympy(log: str) -> list[TestResult]:
             current_method = match[3]
             failure_output = []
             continue
+
+        if "tests finished" in line:
+            if current_method and current_method in test_results:
+                test_results[current_method].failure_output = "\n".join(failure_output)
+                test_results[current_method].file_path = current_file
+            break
 
         failure_output.append(line)
 

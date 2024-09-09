@@ -110,3 +110,19 @@ def test_django_eval():
     assert result.pass_to_pass.failure == [
         "The extra argument works when the formset is pre-filled with initial"
     ]
+
+def test_pytest_eval():
+    instance_id = "pytest-dev__pytest-7373"
+    instance = load_swebench_instance(instance_id)
+    test_spec = TestSpec.from_instance(instance)
+
+    with open("tests/data/pytest_output_5.txt", "r") as f:
+        content = f.read()
+
+    result = test_spec.get_pred_report(content)
+
+    assert len(result.fail_to_pass.success) == 1
+    assert len(result.fail_to_pass.failure) == 0
+    assert len(result.pass_to_pass.success) == 81
+    assert len(result.pass_to_pass.failure) == 0
+    assert result.status == ResolvedStatus.FULL

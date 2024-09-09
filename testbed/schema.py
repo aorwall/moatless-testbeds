@@ -81,19 +81,30 @@ class CommandExecutionResponse(BaseModel):
     output: Optional[str] = Field(None, description="Output of the command execution")
 
 
-class TestStatus(Enum):
+class TestStatus(str, Enum):
     FAILED = "FAILED"
     PASSED = "PASSED"
     SKIPPED = "SKIPPED"
     ERROR = "ERROR"
 
+    def __str__(self):
+        return self.value
+
+
+class TraceItem(BaseModel):
+    file_path: str
+    method: Optional[str] = None
+    line_number: Optional[int] = None
+    output: str = ""
+
 
 class TestResult(BaseModel):
     status: TestStatus = Field(..., description="Status of the test")
     name: str
-    file_path: str | None = None
-    method: str | None = None
-    failure_output: str | None = None
+    file_path: Optional[str] = None
+    method: Optional[str] = None
+    failure_output: Optional[str] = None
+    stacktrace: List[TraceItem] = Field(default_factory=list, description="List of stack trace items")
 
     @model_validator(mode='before')
     def convert_status_to_enum(cls, values):
@@ -101,10 +112,14 @@ class TestResult(BaseModel):
             values['status'] = TestStatus(values['status'])
         return values
 
-    def model_dump(self, **kwargs):
-        data = super().model_dump(**kwargs)
-        data['status'] = self.status.value
-        return data
+
+class TestRunResponse(BaseModel):
+    test_results: List[TestResult] = Field(
+        ..., description="List of test results"
+    )
+    output: Optional[str] = Field(
+        default=None, description="Output of the test run"
+    )
 
 
 class EvalTestResult(BaseModel):
@@ -112,7 +127,6 @@ class EvalTestResult(BaseModel):
         default_factory=list, description="List of successful tests"
     )
     failure: List[str] = Field(default_factory=list, description="List of failed tests")
-
 
 
 class TestsStatus(BaseModel):
@@ -153,6 +167,7 @@ class EvaluationResult(BaseModel):
             "git_diff_output_before": self.git_diff_output_before,
         }
 
+
 class ContainerStatus(BaseModel):
     ready: bool = Field(..., description="Whether the container is ready")
     started: bool = Field(..., description="Whether the container has started")
@@ -191,9 +206,7 @@ class TestbedStatusDetailed(BaseModel):
 class TestbedSummary(BaseModel):
     testbed_id: str = Field(..., description="Unique identifier for the testbed")
     instance_id: str = Field(..., description="ID of the SWE-bench instance")
-    status: TestbedStatusSummary = Field(
-        ..., description="Summary status of the testbed"
-    )
+    status: str = Field(..., description="Current status of the testbed")
 
 
 class TestbedDetailed(BaseModel):

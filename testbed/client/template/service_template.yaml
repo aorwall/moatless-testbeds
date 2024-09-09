@@ -6,9 +6,13 @@ metadata:
 spec:
   selector:
     job-name: {{ testbed_id }}
+  {% if in_cluster %}
+  type: ClusterIP
+  {% else %}
   type: LoadBalancer
   externalTrafficPolicy: Local
   sessionAffinity: ClientIP
+  {% endif %}
   ports:
     - name: http
       port: 8000

@@ -2,7 +2,9 @@ import os
 import pytest
 import uuid
 import logging
-from testbed.client.sdk import TestbedSDK
+
+from testbed.client.manager import TestbedManager
+from testbed.sdk import TestbedSDK
 from dotenv import load_dotenv
 from kubernetes import client, config
 
@@ -26,30 +28,60 @@ def is_correct_k8s_context():
         logger.error(f"Error checking Kubernetes context: {e}")
         return False
 
+
 @pytest.mark.skipif(not is_correct_k8s_context(), reason="Incorrect Kubernetes context or namespace")
-def test_full_integration():
+def test_kubernetes():
     test_id = str(uuid.uuid4())[:8]
     logger.info(f"Starting integration test {test_id}")
+    instance_id = "django__django-15731"
 
-    instance_id = "sympy__sympy-21847"
-    # instance_id = "django__django-15731"
-    instance_id = "matplotlib__matplotlib-24970"  # slow init
-
-    with TestbedSDK(instance_id, os.getenv("KUBE_NAMESPACE"), dataset_name="princeton-nlp/SWE-bench_Lite") as testbed:
+    manager = TestbedManager(namespace="testbed-dev", in_cluster=False)
+    try:
+        testbed = manager.get_or_create_testbed(instance_id=instance_id, user_id="testing", timeout=30)
+        testbed_client = manager.create_client(testbed_id=testbed.testbed_id, instance_id=instance_id, user_id="testing")
+        testbed_client.wait_until_ready(timeout=600)
         logger.info(f"Test {test_id}: Running evaluation")
         run_id = f"test_run_integration_{test_id}"
 
-        response = testbed.execute(["echo 'Hello, World!'"])
-        print(response)
+        response = testbed_client.execute(["echo 'Hello, World!'"])
+        assert response.output == "Hello, World!\n"
 
-        test_status, test_output = testbed.run_tests()
+        test_result = testbed_client.run_tests()
+        print(test_result.model_dump_json(indent=2))
 
-        for r in test_status:
-            print(f"{r.name}: {r.status}")
-        logger.info(test_output)
+        eval_result = testbed_client.run_evaluation()
+        print(eval_result.model_dump_json(indent=2))
+        assert eval_result.resolved
+    except Exception as e:
+        logger.exception(f"Error during integration test {test_id}: {e}")
+        raise
+    finally:
+        manager.delete_testbed(testbed_id=testbed.testbed_id, user_id="testing")
 
+def test_http():
+    test_id = str(uuid.uuid4())[:8]
+    logger.info(f"Starting integration test {test_id}")
 
-    logger.info(f"Test {test_id}: Integration test completed successfully")
+    instance_id = "django__django-15731"
+
+    sdk = TestbedSDK(base_url="http://74.241.176.229", api_key=os.getenv("TESTBED_API_KEY"))
+    testbed = sdk.get_or_create_testbed(instance_id=instance_id)
+
+    try:
+        status = sdk.get_testbed(testbed_id=testbed.testbed_id)
+        print(status.model_dump_json(indent=2))
+
+        test_result = sdk.run_tests(testbed_id=testbed.testbed_id)
+        print(test_result.model_dump_json(indent=2))
+
+        eval_result = sdk.run_evaluation(testbed_id=testbed.testbed_id)
+        print(eval_result.model_dump_json(indent=2))
+        assert eval_result.resolved
+    except Exception as e:
+        logger.exception(f"Error during integration test {test_id}: {e}")
+        raise
+    finally:
+        sdk.delete_testbed(testbed_id=testbed.testbed_id)
 
 
 if __name__ == "__main__":

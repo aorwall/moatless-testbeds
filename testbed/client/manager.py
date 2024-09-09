@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import random
 import string
@@ -57,11 +58,12 @@ class TestbedManager:
                  namespace: str = KUBE_NAMESPACE,
                  in_cluster: bool = False,
                  dataset_name: str = "princeton-nlp/SWE-bench_Lite"):
+        self.in_cluster = in_cluster
+
         if in_cluster:
             config.load_incluster_config()
         else:
             config.load_kube_config()
-
 
         self.dataset_name = dataset_name
         self.namespace = namespace
@@ -76,13 +78,31 @@ class TestbedManager:
         self.env = Environment(loader=FileSystemLoader(self.template_dir))
         self.job_template = self.env.get_template("pod_template.yaml")
         self.service_template = self.env.get_template("service_template.yaml")
+        self.ignored_tests = self.create_ignored_tests_dataset()
 
-    def list_testbeds(self) -> List[TestbedSummary]:
+    def create_ignored_tests_dataset(self):
+        file_path = os.path.join(
+            os.path.dirname(__file__), f"tests.json"
+        )
+        with open(file_path) as f:
+            dataset = json.load(f)
+
+        ignored_tests = {}
+        for instance in dataset:
+            instance_id = instance["instance_id"]
+            ignored_tests[instance_id] = {}
+            for file_path, tests in instance["tests"].items():
+                ignored_tests[instance_id][file_path] = [test["method"] for test in tests
+                                                         if test["status"] in ["FAILED", "ERROR"]]
+
+        return ignored_tests
+
+    def list_testbeds(self, user_id: str) -> List[TestbedSummary]:
         testbeds = []
         job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
         for job in job_list.items:
-            status = self._read_testbed_status_summary(job.metadata.name)
-            if status:
+            if job.metadata.labels.get("user-id") == user_id:
+                status = self._read_testbed_status(job.metadata.name)
                 testbeds.append(
                     TestbedSummary(
                         testbed_id=job.metadata.name,
@@ -92,23 +112,24 @@ class TestbedManager:
                 )
         return testbeds
 
-    def get_or_create_testbed(self, instance_id: str, user_id: str | None = None, timeout: int = 60, log_dir: str | None = None) -> Optional[TestbedClient]:
+    def get_or_create_testbed(self, instance_id: str, user_id: str = "default", timeout: int = 60) -> Optional[TestbedSummary]:
+        logger.info(f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id})")
         job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
         for job in job_list.items:
-            if job.metadata.labels.get("instance-id") == instance_id:
-                return TestbedClient(
+            if job.metadata.labels.get("instance-id") == instance_id and job.metadata.labels.get("user-id") == user_id:
+                logger.info(f"Testbed for instance {instance_id} already exists.")
+                status = self._read_testbed_status(job.metadata.name)
+                return TestbedSummary(
                     testbed_id=job.metadata.name,
-                    port=8000,
-                    instance=load_swebench_instance(instance_id),
-                    startup_timeout=timeout,
-                    log_dir=log_dir
+                    instance_id=job.metadata.labels.get("instance-id", "unknown"),
+                    status=status,
                 )
 
-        return self.create_testbed(instance_id, user_id, timeout, log_dir)
+        return self.create_testbed(instance_id, user_id, timeout)
 
     def create_testbed(
-        self, instance_id: str, user_id: str | None = None, timeout: int = 60, log_dir: str | None = None
-    ) -> TestbedClient:
+        self, instance_id: str, user_id: str = "default", timeout: int = 60
+    ) -> TestbedSummary:
         logger.info(f"create_testbed(user: {user_id}, instance_id: {instance_id})")
         start_time = time.time()
         try:
@@ -124,12 +145,12 @@ class TestbedManager:
             job_manifest = self._create_job_manifest(
                 instance=instance, user_id=user_id, testbed_id=testbed_id
             )
-            service_manifest = self._create_service_manifest(testbed_id)
 
-            # Create job and service
             self.batch_v1.create_namespaced_job(
                 body=job_manifest, namespace=self.namespace
             )
+
+            service_manifest = self._create_service_manifest(testbed_id)
             self.core_v1.create_namespaced_service(
                 body=service_manifest, namespace=self.namespace
             )
@@ -138,19 +159,19 @@ class TestbedManager:
             while not job:
                 if time.time() - start_time > timeout:
                     raise TimeoutError(f"Job creation of job {testbed_id} timed out")
-                time.sleep(1)
+                time.sleep(0.1)
                 job = self._get_job(testbed_id)
 
             logger.info(
                 f"create_testbed(user: {user_id}, instance_id: {instance_id}, testbed_id: {testbed_id}) Job and Service created successfully in namespace {self.namespace}."
             )
 
-            return TestbedClient(
-                testbed_id=testbed_id,
-                port=8000,
-                instance=instance,
-                startup_timeout=timeout,
-                log_dir=log_dir,
+            status = self._read_testbed_status(job.metadata.name)
+
+            return TestbedSummary(
+                testbed_id=job.metadata.name,
+                instance_id=job.metadata.labels.get("instance-id", "unknown"),
+                status=status,
             )
         except client.exceptions.ApiException as e:
             if e.reason == "Conflict":
@@ -162,29 +183,50 @@ class TestbedManager:
                 )
                 raise RuntimeError("Error creating job or service")
 
+    def get_testbed(self, testbed_id: str, user_id: str = "default") -> Optional[TestbedDetailed]:
+        logger.info(f"get_testbed(testbed_id: {testbed_id}, user_id: {user_id})")
+        job = self._get_job(testbed_id)
+        if not job or job.metadata.labels.get("user-id") != user_id:
+            return None
+
+        return self._read_testbed_status_detailed(job.metadata.name)
+
     def create_client(
         self,
         testbed_id: str,
-        instance_id: str,
+        instance_id: str | None = None,
+        user_id: str = "default",
         timeout: float = 30,
+        log_dir: str | None = None
     ) -> TestbedClient:
+        logger.info(f"create_client(testbed_id: {testbed_id}, instance_id: {instance_id}, user_id: {user_id}, timeout: {timeout})")
+        job = self._get_job(testbed_id)
+        if not job or job.metadata.labels.get("user-id") != user_id:
+            raise ValueError(f"Testbed {testbed_id} not found or not owned by user {user_id}")
+
+        if not instance_id:
+            instance_id = job.metadata.labels.get("instance-id")
+            if not instance_id:
+                raise ValueError(f"Instance ID not found for testbed {testbed_id}")
+
         instance = load_swebench_instance(instance_id)
         return TestbedClient(
             testbed_id=testbed_id,
             port=8000,
             instance=instance,
+            startup_timeout=timeout,
+            log_dir=log_dir,
+            ignored_tests=self.ignored_tests.get(instance_id, {}),
+            in_cluster=self.in_cluster,
+            namespace=self.namespace
         )
 
-    def delete_testbed(self, testbed_id: str, user_id: str | None = None):
+    def delete_testbed(self, testbed_id: str, user_id: str = "default"):
         try:
-            # Patch the service to remove finalizers
-            self.core_v1.patch_namespaced_service(
-                name=testbed_id,
-                namespace=self.namespace,
-                body={"metadata": {"finalizers": None}}
-            )
+            job = self._get_job(testbed_id)
+            if not job or job.metadata.labels.get("user-id") != user_id:
+                raise ValueError(f"Testbed {testbed_id} not found or not owned by user {user_id}")
 
-            # Delete the service
             self.core_v1.delete_namespaced_service(
                 name=testbed_id,
                 namespace=self.namespace,
@@ -193,7 +235,6 @@ class TestbedManager:
                 ),
             )
 
-            # Delete the job
             response = self.batch_v1.delete_namespaced_job(
                 name=testbed_id,
                 namespace=self.namespace,
@@ -219,17 +260,17 @@ class TestbedManager:
             logger.exception(error_message)
             raise RuntimeError(error_message)
 
-    def delete_all_testbeds(self, user_id: str | None = None):
-        logger.info(f"Deleting all testbeds{' for user ' + user_id if user_id else ''}")
+    def delete_all_testbeds(self, user_id: str = "default"):
+        logger.info(f"Deleting all testbeds for user {user_id}")
         job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
 
         deleted_count = 0
         for job in job_list.items:
-            if user_id and job.metadata.labels.get("user-id") != user_id:
+            if job.metadata.labels.get("user-id") != user_id:
                 continue
 
             try:
-                self.delete_testbed(job.metadata.name)
+                self.delete_testbed(job.metadata.name, user_id)
                 deleted_count += 1
             except Exception as e:
                 logger.error(f"Failed to delete testbed {job.metadata.name}: {str(e)}")
@@ -254,7 +295,7 @@ class TestbedManager:
         return f"instance-{instance_id.replace('_', '-')}-configmap"
 
     def _create_job_manifest(
-        self, instance: SWEbenchInstance, testbed_id: str, user_id: str
+        self, instance: SWEbenchInstance, user_id: str, testbed_id: str
     ) -> str:
         instance_id = instance.instance_id
         test_spec = TestSpec.from_instance(instance)
@@ -281,7 +322,7 @@ class TestbedManager:
             "testbed_id": testbed_id,
             "user_id": user_id,
             "testbed_image": f"moatless.azurecr.io/sweb.eval.x86_64.{instance_id}",
-            "sidecar_image": "moatless.azurecr.io/testbed-sidecar:latest",
+            "sidecar_image": "aorwall/moatless-testbed-sidecar:latest",
             "limit_cpu": limit_cpu,
             "limit_memory": limit_memory,
             "request_cpu": request_cpu,
@@ -302,28 +343,18 @@ class TestbedManager:
             else:
                 raise
 
-    def _read_testbed_status_summary(
+    def _read_testbed_status(
         self, job_name: str
-    ) -> Optional[TestbedStatusSummary]:
+    ) -> str:
         pod_list = self.core_v1.list_namespaced_pod(
             namespace=self.namespace, label_selector=f"job-name={job_name}"
         )
         if pod_list.items:
             pod = pod_list.items[0]
-            testbed_ready = False
-            sidecar_ready = False
-            if pod.status and pod.status.container_statuses:
-                for container in pod.status.container_statuses:
-                    if container.name == "testbed":
-                        testbed_ready = container.ready
-                    elif container.name == "sidecar":
-                        sidecar_ready = container.ready
-            return TestbedStatusSummary(
-                pod_phase=pod.status.phase if pod.status else "Unknown",
-                testbed_ready=testbed_ready,
-                sidecar_ready=sidecar_ready,
-            )
-        return None
+            return pod.status.phase if pod else "Unknown"
+        else:
+            logger.warning(f"Pod not found for job {job_name}")
+            return "Unknown"
 
     def _read_testbed_status_detailed(
         self, job_name: str
@@ -354,6 +385,7 @@ class TestbedManager:
                 sidecar=sidecar_status,
             )
         else:
+            logger.warning(f"Pod not found for job {job_name}")
             return None
 
     def _get_container_status(self, container) -> ContainerStatus:
@@ -393,6 +425,41 @@ class TestbedManager:
         context = {
             "testbed_id": testbed_id,
             "namespace": self.namespace,
+            "in_cluster": self.in_cluster,
         }
         manifest_yaml = self.service_template.render(context)
         return yaml.safe_load(manifest_yaml)
+
+    def cleanup_user_resources(self, user_id: str):
+        logger.info(f"Cleaning up all resources for user {user_id}")
+        deleted_count = 0
+
+        # Delete jobs
+        job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace, label_selector=f"user-id={user_id}")
+        for job in job_list.items:
+            try:
+                self.batch_v1.delete_namespaced_job(
+                    name=job.metadata.name,
+                    namespace=self.namespace,
+                    body=client.V1DeleteOptions(propagation_policy="Foreground", grace_period_seconds=0)
+                )
+                deleted_count += 1
+            except Exception as e:
+                logger.error(f"Failed to delete job {job.metadata.name}: {str(e)}")
+
+        # Delete services
+        service_list = self.core_v1.list_namespaced_service(namespace=self.namespace, label_selector=f"user-id={user_id}")
+        for service in service_list.items:
+            try:
+                self.core_v1.delete_namespaced_service(
+                    name=service.metadata.name,
+                    namespace=self.namespace,
+                    body=client.V1DeleteOptions(propagation_policy="Foreground", grace_period_seconds=0)
+                )
+                deleted_count += 1
+            except Exception as e:
+                logger.error(f"Failed to delete service {service.metadata.name}: {str(e)}")
+
+        logger.info(f"Deleted {deleted_count} resources for user {user_id}")
+        return deleted_count
+

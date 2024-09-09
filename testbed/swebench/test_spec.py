@@ -23,7 +23,7 @@ from testbed.swebench.constants import (
     RUN_TESTS,
 )
 from testbed.swebench.grading import get_eval_tests_report, get_resolution_status
-from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER
+from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER, parse_traceback
 from testbed.swebench.utils import get_test_directives
 
 DIFF_MODIFIED_FILE_REGEX = r"--- a/(.*)"
@@ -70,6 +70,7 @@ class TestSpec:
             pass_to_pass=instance.pass_to_pass,
             arch=arch,
         )
+
 
     @property
     def eval_script(self):
@@ -272,12 +273,21 @@ class TestSpec:
         Retrieve evaluation results for a task instance from its corresponding log file
         """
 
-        log_parser = MAP_REPO_TO_PARSER[self.repo]
         content = content.split(f"{RUN_TESTS}\n")[-1]
+
+        if content.strip().startswith("Traceback (most recent call last):"):
+            result = parse_traceback(content)
+            return [result]
+
+        log_parser = MAP_REPO_TO_PARSER[self.repo]
+
         results = log_parser(content)
 
         for result in results:
             if result.file_path and result.file_path.startswith("/testbed/"):
                 result.file_path = result.file_path[len("/testbed/"):]
+
+            if result.failure_output:
+                result.failure_output = result.failure_output.replace("/testbed/", "")
 
         return results

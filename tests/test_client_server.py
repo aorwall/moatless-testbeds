@@ -1,5 +1,5 @@
 import pytest
-from testbed.server.server import create_app
+from testbed.testbed.server import create_app
 from testbed.client.client import TestbedClient
 import threading
 

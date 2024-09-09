@@ -16,7 +16,7 @@ PASS_TO_PASS = "PASS_TO_PASS"
 PASS_TO_FAIL = "PASS_TO_FAIL"
 
 
-class ResolvedStatus(Enum):
+class ResolvedStatus(str, Enum):
     NO = "RESOLVED_NO"
     PARTIAL = "RESOLVED_PARTIAL"
     FULL = "RESOLVED_FULL"
