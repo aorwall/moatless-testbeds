@@ -21,7 +21,8 @@ from testbed.schema import (
     SWEbenchInstance,
     TestResult, TestbedDetailed, TestbedStatusDetailed, ContainerStatus, TestRunResponse,
 )
-from testbed.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL
+from testbed.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL, RUN_TESTS
+from testbed.swebench.log_parsers import parse_log
 
 from testbed.swebench.test_spec import TestSpec
 
@@ -392,7 +393,9 @@ class TestbedClient:
         commands = []
         commands.extend(self.test_spec.test_script(test_files))
         response = self.execute(commands)
-        test_result = self.test_spec.parse_logs(response.output)
+
+        log = response.output.split(f"{RUN_TESTS}\n")[-1]
+        test_result = parse_log(log, self.test_spec.repo)
 
         filtered_test_result = []
 

@@ -24,7 +24,7 @@ from testbed.swebench.constants import (
     RUN_TESTS,
 )
 from testbed.swebench.grading import get_eval_tests_report, get_resolution_status
-from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER, parse_traceback
+from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER, parse_traceback, parse_log
 from testbed.swebench.utils import get_test_directives
 
 DIFF_MODIFIED_FILE_REGEX = r"--- a/(.*)"
@@ -256,7 +256,7 @@ class TestSpec:
             report (EvaluationResult): report of metrics
         """
 
-        test_result = self.parse_logs(content)
+        test_result = parse_log(content, self.repo)
         eval_ref = {
             KEY_INSTANCE_ID: self.instance_id,
             FAIL_TO_PASS: self.fail_to_pass,
@@ -271,30 +271,3 @@ class TestSpec:
             fail_to_pass=EvalTestResult(**report[FAIL_TO_PASS]),
             pass_to_pass=EvalTestResult(**report[PASS_TO_PASS]),
         )
-
-    def parse_logs(self, content: str | None = None) -> list[TestResult]:
-        """
-        Retrieve evaluation results for a task instance from its corresponding log file
-        """
-
-        content = content.split(f"{RUN_TESTS}\n")[-1]
-
-        if content.strip().startswith("Traceback (most recent call last):") or content.strip().startswith("ImportError"):
-            result = parse_traceback(content)
-            if result:
-                return [result]
-            else:
-                logger.warning(f"Failed to parse traceback for output:\n{content}")
-
-        log_parser = MAP_REPO_TO_PARSER[self.repo]
-
-        results = log_parser(content)
-
-        for result in results:
-            if result.file_path and result.file_path.startswith("/testbed/"):
-                result.file_path = result.file_path[len("/testbed/"):]
-
-            if result.failure_output:
-                result.failure_output = result.failure_output.replace("/testbed/", "")
-
-        return results

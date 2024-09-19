@@ -7,6 +7,39 @@ from testbed.schema import TestResult, TestStatus, TraceItem
 
 logger = logging.getLogger(__name__)
 
+
+def parse_log(log: str, repo: str) -> list[TestResult]:
+    log_parser = MAP_REPO_TO_PARSER[repo]
+    test_results = log_parser(log)
+
+    if not test_results:
+        logger.info(f"No test results found in log, will check for unhandled errors.")
+        # Check for unhandled pytest error
+        if detect_unhandled_pytest_error(log):
+            logger.info("Found unhandled pytest error in log")
+            unhandled_test_result = parse_unhandled_pytest_error(log, "unhandled_test_error")
+            test_results.append(unhandled_test_result)
+        else:
+            lines = log.splitlines()
+            traceback_start = next((i for i, line in enumerate(lines) if "Traceback (most recent call last):" in line), None)
+            if traceback_start is not None:
+                traceback_end = next((i for i, line in enumerate(lines[traceback_start:], start=traceback_start) if "During handling of the above exception" in line), len(lines))
+                traceback = "\n".join(lines[traceback_start:traceback_end])
+                traceback_result = parse_traceback(traceback)
+                if traceback_result:
+                    test_results.append(traceback_result)
+
+    # Skip testbed prefix in file paths
+    for result in test_results:
+        if result.file_path and result.file_path.startswith("/testbed/"):
+            result.file_path = result.file_path[len("/testbed/"):]
+
+        if result.failure_output:
+            result.failure_output = result.failure_output.replace("/testbed/", "")
+
+    return test_results
+
+
 def parse_log_pytest(log: str) -> list[TestResult]:
     test_results = []
     test_errors = []
@@ -171,9 +204,6 @@ def parse_log_pytest(log: str) -> list[TestResult]:
         if test.name in failure_outputs:
             test.failure_output = "\n".join(failure_outputs[test.name])
 
-    if not test_results and detect_unhandled_pytest_error(log):
-        unhandled_test_result = parse_unhandled_pytest_error(log, "unhandled_test_error")
-        test_results.append(unhandled_test_result)
 
     return test_results
 
