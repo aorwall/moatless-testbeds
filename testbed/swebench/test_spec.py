@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import platform
 import re
 from dataclasses import dataclass
@@ -27,6 +28,9 @@ from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER, parse_traceback
 from testbed.swebench.utils import get_test_directives
 
 DIFF_MODIFIED_FILE_REGEX = r"--- a/(.*)"
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -275,9 +279,12 @@ class TestSpec:
 
         content = content.split(f"{RUN_TESTS}\n")[-1]
 
-        if content.strip().startswith("Traceback (most recent call last):"):
+        if content.strip().startswith("Traceback (most recent call last):") or content.strip().startswith("ImportError"):
             result = parse_traceback(content)
-            return [result]
+            if result:
+                return [result]
+            else:
+                logger.warning(f"Failed to parse traceback for output:\n{content}")
 
         log_parser = MAP_REPO_TO_PARSER[self.repo]
 

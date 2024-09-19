@@ -339,3 +339,27 @@ def test_traceback():
     result = parse_traceback(log)
     assert result.file_path == "django/db/models/fields/__init__.py"
     assert len(result.stacktrace) == 16
+    assert result.stacktrace[0].method == "<module>"
+
+
+def test_import_error_traceback():
+    log = """ImportError while loading conftest '/testbed/lib/mpl_toolkits/axes_grid1/tests/conftest.py'.
+    lib/mpl_toolkits/axes_grid1/__init__.py:3: in <module>
+        from .axes_grid import AxesGrid, Grid, ImageGrid
+    lib/mpl_toolkits/axes_grid1/axes_grid.py:29: in <module>
+        _cbaraxes_class_factory = cbook._make_class_factory(CbarAxesBase, "Cbar{}")
+    E   NameError: name 'CbarAxesBase' is not defined
+    """
+    result = parse_log_pytest(log)
+    assert result
+    assert len(result) == 1
+    assert result[0].status == TestStatus.ERROR
+    assert len(result[0].stacktrace) == 2
+    assert result[0].stacktrace[0].file_path == "lib/mpl_toolkits/axes_grid1/__init__.py"
+    assert result[0].stacktrace[0].line_number == 3
+    assert result[0].stacktrace[0].output == "from .axes_grid import AxesGrid, Grid, ImageGrid"
+    assert result[0].stacktrace[0].method == "<module>"
+    assert result[0].stacktrace[1].file_path == "lib/mpl_toolkits/axes_grid1/axes_grid.py"
+    assert result[0].stacktrace[1].line_number == 29
+    assert result[0].stacktrace[1].method == "<module>"
+    assert result[0].failure_output == "NameError: name 'CbarAxesBase' is not defined"

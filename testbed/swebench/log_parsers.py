@@ -171,7 +171,94 @@ def parse_log_pytest(log: str) -> list[TestResult]:
         if test.name in failure_outputs:
             test.failure_output = "\n".join(failure_outputs[test.name])
 
+    if not test_results and detect_unhandled_pytest_error(log):
+        unhandled_test_result = parse_unhandled_pytest_error(log, "unhandled_test_error")
+        test_results.append(unhandled_test_result)
+
     return test_results
+
+
+# Function to detect unhandled errors that can't be parsed by your regular parser
+def detect_unhandled_pytest_error(log: str) -> bool:
+    """
+    Detects if the log contains unhandled pytest-style errors, excluding those covered by the regular parser.
+    """
+    # Patterns to match collection, setup, or teardown errors that are unhandled
+    unhandled_patterns = [
+        r"ImportError while loading conftest",  # Specifically the case you mentioned
+        r"Error during collection",
+        r"Error while loading fixture",
+    ]
+
+    # Search for any unhandled pattern in the log
+    for pattern in unhandled_patterns:
+        if re.search(pattern, log):
+            return True
+    return False
+
+
+# Function to parse the unhandled pytest error into TestResult format
+def parse_unhandled_pytest_error(log: str, test_name: str) -> TestResult:
+    """
+    Parses a pytest-style error log that isn't handled by the regular parser into a TestResult object.
+    """
+    stacktrace = []
+    failure_output = None
+
+    # Extract each line of the stack trace
+    trace_lines = log.split("\n")
+
+
+    # Pattern to match: file_path:line_number: in method_name (method is the last item on the line)
+    pattern = r'([^:]+):(\d+):\s+in\s+(.+)$'
+
+    i = 0
+    while i < len(trace_lines):
+        trace = trace_lines[i]
+        # Ensure trace is a string and search for matches
+        if isinstance(trace, str):
+            match = re.search(pattern, trace)
+
+            if match:
+                file_path = match.group(1)
+                line_number = int(match.group(2))
+                method_name = match.group(3)
+
+                # Now look ahead to the next line for the output
+                if i + 1 < len(trace_lines):
+                    output = trace_lines[i + 1].strip()  # Get the next line as output
+                else:
+                    output = ""
+
+                trace_item = TraceItem(
+                    file_path=file_path.strip(),
+                    line_number=line_number,
+                    method=method_name,
+                    output=output
+                )
+                stacktrace.append(trace_item)
+
+                i += 2
+            else:
+                i += 1
+        else:
+            i += 1
+
+    # Extract the final error type and message
+    error_message_match = re.search(r"E\s+(\w+Error):\s+(.+)", log)
+    if error_message_match:
+        failure_output = f"{error_message_match.group(1)}: {error_message_match.group(2)}"
+    else:
+        failure_output = log
+
+    test_result = TestResult(
+        status=TestStatus.ERROR,
+        name=test_name,
+        failure_output=failure_output,
+        stacktrace=stacktrace
+    )
+
+    return test_result
 
 
 
@@ -311,6 +398,7 @@ def parse_traceback_line(line) -> tuple[str, int, str] | tuple[None, None, None]
         return file_path, line_number, method_name
     else:
         return None, None, None
+
 
 def parse_traceback(log: str) -> TestResult | None:
     current_trace_item = None
