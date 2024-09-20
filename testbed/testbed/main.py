@@ -39,7 +39,7 @@ def check_kubernetes_connection():
         pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
         logger.info(f"Successfully verified pod: {pod.metadata.name}")
     except client.exceptions.ApiException as e:
-        logger.error(f"Failed to verify pod: {e}")
+        logger.warning(f"Failed to verify pod: {e}")
     except Exception as e:
         logger.error(f"Failed to connect to Kubernetes API: {e}")
         raise

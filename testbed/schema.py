@@ -75,7 +75,7 @@ class RunCommandsRequest(BaseModel):
 
 
 class CommandExecutionResponse(BaseModel):
-    status: Literal["running", "completed"] = Field(
+    status: Literal["running", "completed", "idle"] = Field(
         ..., description="Status of the command execution"
     )
     output: Optional[str] = Field(None, description="Output of the command execution")

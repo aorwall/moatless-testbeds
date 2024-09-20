@@ -306,14 +306,14 @@ class TestbedManager:
             request_cpu = "1.0"
         else:
             limit_cpu = "1.2"
-            request_cpu = "0.1"
+            request_cpu = "0.25"
 
         if instance_id.startswith("matplotlib"):
             limit_memory = "1Gi"
             request_memory = "400Mi"
         else:
             limit_memory = "600Mi"
-            request_memory = "100Mi"
+            request_memory = "300Mi"
 
         context = {
             "job_name": testbed_id,

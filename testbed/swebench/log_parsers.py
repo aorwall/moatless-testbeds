@@ -499,25 +499,32 @@ def parse_log_sympy(log: str) -> list[TestResult]:
         list[TestResult]: List of TestResult objects
     """
     test_results = {}
+    current_file = None
+
     for line in log.split("\n"):
         line = line.strip()
+        
+        # Check for file path
+        if ".py[" in line:
+            current_file = line.split("[")[0].strip()
+            continue
+
         if line.startswith("test_"):
             split_line = line.split()
             if len(split_line) < 2:
                 continue
 
-            if split_line[1] == "E":
-                test = split_line[0].strip()
-                test_results[test] = TestResult(status=TestStatus.ERROR, name=test, method=test)
-            if split_line[1] == "F":
-                test = split_line[0].strip()
-                test_results[test] = TestResult(status=TestStatus.FAILED, name=test, method=test)
-            if split_line[1] == "ok":
-                test = split_line[0].strip()
-                test_results[test] = TestResult(status=TestStatus.PASSED, name=test, method=test)
-            if split_line[1] == "s":
-                test = split_line[0].strip()
-                test_results[test] = TestResult(status=TestStatus.SKIPPED, name=test, method=test)
+            test = split_line[0].strip()
+            status = split_line[1]
+
+            if status == "E":
+                test_results[test] = TestResult(status=TestStatus.ERROR, name=test, method=test, file_path=current_file)
+            elif status == "F":
+                test_results[test] = TestResult(status=TestStatus.FAILED, name=test, method=test, file_path=current_file)
+            elif status == "ok":
+                test_results[test] = TestResult(status=TestStatus.PASSED, name=test, method=test, file_path=current_file)
+            elif status == "s":
+                test_results[test] = TestResult(status=TestStatus.SKIPPED, name=test, method=test, file_path=current_file)
 
     current_method = None
     current_file = None

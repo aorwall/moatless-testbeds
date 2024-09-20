@@ -8,6 +8,7 @@ datasets
 # Server
 flask
 gunicorn
+werkzeug
 
 # Azure specific
 azure-storage-blob

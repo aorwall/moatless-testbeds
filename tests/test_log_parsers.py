@@ -314,6 +314,9 @@ def test_sympy_1():
     assert all(r.failure_output for r in errored)
 
     assert len(result) == 116
+    for r in result:
+        assert r.file_path
+        assert r.method
 
 
 def test_sympy_2():
