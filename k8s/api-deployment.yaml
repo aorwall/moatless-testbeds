@@ -4,7 +4,7 @@ metadata:
   name: testbed-api-deployment
   namespace: ${NAMESPACE}
 spec:
-  replicas: 1
+  replicas: 6
   selector:
     matchLabels:
       app: testbed-api
@@ -22,6 +22,11 @@ spec:
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8000
+        resources:
+          requests:
+            memory: "500Mi"
+          limits:
+            memory: "1Gi"
         volumeMounts:
         - name: api-keys
           mountPath: /app/api_keys.json
@@ -31,7 +36,11 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          value: InstrumentationKey=65db81ff-ac3e-422a-88b1-94d2487c7b66;IngestionEndpoint=https://swedencentral-0.in.applicationinsights.azure.com/;ApplicationId=fcfc791b-70ab-492f-a9a5-e1fc38ba832f
       volumes:
       - name: api-keys
         secret:
           secretName: testbed-api-keys-secret
+      nodeSelector:
+        node-purpose: main

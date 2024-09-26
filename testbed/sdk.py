@@ -1,8 +1,11 @@
+import logging
 import os
-
+import base64
 import requests
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
+
+from testbed.sdk.client import TestbedClient
 
 
 class TestbedSummary(BaseModel):
@@ -53,12 +56,17 @@ class TestRunResponse(BaseModel):
     test_results: List[TestResult]
     output: Optional[str] = None
 
+logger = logging.getLogger(__name__)
 
 class TestbedSDK:
     def __init__(self, base_url: str | None = None, api_key: str | None = None):
         base_url = base_url or os.getenv("TESTBED_BASE_URL")
         self.base_url = base_url.rstrip('/')
-        api_key = api_key or os.getenv("TESTBED_API_KEY")
+        self.api_key = api_key or os.getenv("TESTBED_API_KEY")
+
+        assert self.base_url, "TESTBED_BASE_URL environment variable must be set"
+        assert self.api_key, "TESTBED_API_KEY environment variable must be set"
+
         self.headers = {"X-API-Key": api_key}
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
@@ -73,7 +81,11 @@ class TestbedSDK:
 
     def get_or_create_testbed(self, instance_id: str) -> TestbedDetailed:
         data = self._request("POST", "testbeds", json={"instance_id": instance_id})
-        return TestbedSummary(**data)
+        return TestbedDetailed(**data)
+
+    def create_client(self, instance_id: str) -> TestbedClient:
+        testbed = self.get_or_create_testbed(instance_id)
+        return TestbedClient(testbed.testbed_id, instance_id, base_url=self.base_url, api_key=self.api_key)
 
     def get_testbed(self, testbed_id: str) -> TestbedStatusDetailed:
         data = self._request("GET", f"testbeds/{testbed_id}")
@@ -82,23 +94,6 @@ class TestbedSDK:
     def delete_testbed(self, testbed_id: str) -> Dict[str, str]:
         return self._request("DELETE", f"testbeds/{testbed_id}")
 
-    def run_tests(self, testbed_id: str, test_files: List[str] | None = None, patch: str | None = None) -> TestRunResponse:
-        data = {}
-        if test_files:
-            data["test_files"] = test_files
-
-        if patch:
-            data["patch"] = patch
-
-        data = self._request("POST", f"testbeds/{testbed_id}/run-tests", json=data)
-        return TestRunResponse(**data)
-
-    def run_evaluation(self, testbed_id: str, patch: Optional[str] = None) -> EvaluationResult:
-        data = {}
-        if patch:
-            data["patch"] = patch
-        result = self._request("POST", f"testbeds/{testbed_id}/run-evaluation", json=data)
-        return EvaluationResult(**result)
 
     def delete_all_testbeds(self) -> Dict[str, str]:
         return self._request("DELETE", "testbeds")

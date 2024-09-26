@@ -22,9 +22,11 @@ PATCH_HUNK_PATTERN = re.compile(
     re.DOTALL,
 )
 
+# Global variable to store the dataset
+_SWEBENCH_DATASET = None
 
 def load_swebench_instance(
-    instance_id: str, name="princeton-nlp/SWE-bench", split="test"
+    instance_id: str, name="princeton-nlp/SWE-bench_Lite", split="test"
 ) -> Optional[SWEbenchInstance]:
     if name.lower() in {"swe-bench", "swebench", "swe_be"}:
         name = "princeton-nlp/SWE-bench"
@@ -55,8 +57,28 @@ def load_swebench_dataset(
     name="princeton-nlp/SWE-bench", split="test"
 ) -> list[SWEbenchInstance]:
     """
-    Load SWE-bench dataset from Hugging Face Datasets or local .json/.jsonl file
+    Load SWE-bench dataset from memory if available (only for princeton-nlp/SWE-bench),
+    otherwise load from local JSON file if it exists,
+    or from Hugging Face Datasets or local .json/.jsonl file
     """
+    global _SWEBENCH_DATASET
+
+    # Only use in-memory caching for princeton-nlp/SWE-bench
+    if name == "princeton-nlp/SWE-bench_Lite":
+        # If dataset is already in memory, return it
+        if _SWEBENCH_DATASET is not None:
+            return _SWEBENCH_DATASET
+
+        # Update the local file path to use /app directory
+        local_file = Path("/app/swebench_dataset.json")
+        if local_file.exists():
+            print(f"Loading dataset from local file: {local_file.absolute()}")
+            with local_file.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            _SWEBENCH_DATASET = [SWEbenchInstance(**instance) for instance in data]
+            return _SWEBENCH_DATASET
+
+    # For other datasets or if local file doesn't exist, proceed with original loading method
     # Load from local .json/.jsonl file
     if name.endswith(".json") or name.endswith(".jsonl"):
         return [

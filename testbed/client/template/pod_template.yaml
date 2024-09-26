@@ -30,8 +30,8 @@ spec:
                 echo "Starting /shared/run_cmd.sh"
                 touch /shared/cmd_output.txt
                 /shared/run_cmd.sh 2>&1 | tee /shared/cmd_output.txt
-                touch /shared/complete_cmd
                 rm /shared/run_cmd.sh
+                touch /shared/complete_cmd
                 echo "Finished /shared/run_cmd.sh"
               elif [ -f /shared/kill ]; then
                 echo "Kill command received. Exiting."

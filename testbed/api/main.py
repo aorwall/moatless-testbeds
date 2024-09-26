@@ -3,12 +3,20 @@ import os
 import time
 import json
 from testbed.client.manager import TestbedManager
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from azure.monitor.opentelemetry import configure_azure_monitor
 
 from flask import Flask, request, jsonify, send_file
 from functools import wraps
 import logging
 from werkzeug.exceptions import HTTPException
 from werkzeug.exceptions import RequestTimeout
+import uuid
+from kubernetes import client as k8s_client
+import requests
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -28,12 +36,18 @@ def load_api_keys():
         logger.error(f"Failed to parse API keys JSON from {api_keys_path}")
         return {}
 
+def configure_opentelemetry(app):
+    configure_azure_monitor()
+    FlaskInstrumentor().instrument_app(app)
+
 def create_app():
     app = Flask(__name__)
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable caching
     app.config['PROPAGATE_EXCEPTIONS'] = True
     testbed_manager = TestbedManager(in_cluster=True)
     api_keys = load_api_keys()
+
+    configure_opentelemetry(app)
 
     def validate_api_key(f):
         @wraps(f)
@@ -48,10 +62,12 @@ def create_app():
     @app.errorhandler(HTTPException)
     def handle_exception(e):
         response = e.get_response()
+        error_id = str(uuid.uuid4())
         response.data = json.dumps({
             "code": e.code,
             "name": e.name,
-            "description": e.description,
+            "error": e.description,
+            "error_id": error_id
         })
         response.content_type = "application/json"
         return response
@@ -59,6 +75,19 @@ def create_app():
     @app.errorhandler(TimeoutError)
     def handle_timeout_error(e):
         return jsonify({"error": "Request timed out"}), 504
+
+    @app.errorhandler(ValueError)
+    def handle_value_error(e):
+        return jsonify({"error": str(e)}), 400
+
+    @app.errorhandler(Exception)
+    def handle_unknown_exception(e):
+        error_id = str(uuid.uuid4())
+        logger.exception(f"Unhandled exception occurred. Error ID: {error_id}")
+        return jsonify({
+            "error": "An unexpected error occurred",
+            "error_id": error_id
+        }), 500
 
     @app.route("/health", methods=["GET"])
     def health_check():
@@ -106,28 +135,24 @@ def create_app():
         data = request.json
         test_files = data.get("test_files")
         patch = data.get("patch")
-        logger.debug(f"run_tests(testbed_id={testbed_id}, user_id={user_id})")
-        client = testbed_manager.create_client(testbed_id, user_id=user_id)
+        instance_id = data.get("instance_id")
+
+        logger.debug(f"run_tests(testbed_id={testbed_id}, user_id={user_id}, instance_id={instance_id})")
+        client = testbed_manager.create_client(testbed_id, instance_id=instance_id, user_id=user_id)
         client.wait_until_ready(timeout=600)
 
-        try:
-            result = client.run_tests(test_files, patch)
-            return jsonify(result.model_dump()), 200
-        except TimeoutError:
-            logger.exception(f"run_tests() Timeout during execution")
-            return jsonify({"error": "Request timed out"}), 504
-        except Exception as e:
-            logger.exception(f"run_tests() Error during execution")
-            return jsonify({"error": str(e)}), 500
+        result = client.run_tests(test_files, patch)
+        return jsonify(result.model_dump()), 200
 
     @app.route("/testbeds/<testbed_id>/run-evaluation", methods=["POST"])
     @validate_api_key
     def run_evaluation(testbed_id: str, user_id: str):
         data = request.json
         patch = data.get("patch")
-        logger.debug(f"run_evaluation(testbed_id={testbed_id}, user_id={user_id})")
+        instance_id = data.get("instance_id")
+        logger.debug(f"run_evaluation(testbed_id={testbed_id}, user_id={user_id}, instance_id={instance_id})")
 
-        client = testbed_manager.create_client(testbed_id, user_id=user_id)
+        client = testbed_manager.create_client(testbed_id, instance_id=instance_id, user_id=user_id)
         client.wait_until_ready(timeout=600)
 
         try:
@@ -158,6 +183,69 @@ def create_app():
             return jsonify({"message": f"Cleaned up {deleted_count} resources"}), 200
         except Exception as e:
             logger.exception(f"Error during cleanup for user {user_id}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/testbeds/<testbed_id>/status", methods=["GET"])
+    @validate_api_key
+    def get_testbed_status(testbed_id: str, user_id: str):
+        try:
+            status = testbed_manager.get_testbed_status(testbed_id, user_id)
+            if not status:
+                return jsonify({"error": "Testbed not found or unable to read status"}), 404
+
+            return jsonify(status), 200
+        except Exception as e:
+            logger.exception(f"Error getting testbed status for {testbed_id}")
+            return jsonify({"error": str(e)}), 500
+
+
+    @app.route("/testbeds/<testbed_id>/exec", methods=["POST"])
+    @validate_api_key
+    def execute_command(testbed_id: str, user_id: str):
+        data = request.json
+        try:
+            result, status_code = testbed_manager.proxy_exec(testbed_id, data)
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.exception(f"execute_command() Error during execution")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/testbeds/<testbed_id>/exec", methods=["GET"])
+    @validate_api_key
+    def get_command_status(testbed_id: str, user_id: str):
+        try:
+            result, status_code = testbed_manager.proxy_exec_status(testbed_id)
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.exception(f"get_command_status() Error getting command status")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/testbeds/<testbed_id>/file", methods=["GET"])
+    @validate_api_key
+    def get_file(testbed_id: str, user_id: str):
+        file_path = request.args.get("file_path")
+        if not file_path:
+            return jsonify({"error": "Missing 'file_path' query parameter"}), 400
+
+        try:
+            result, status_code = testbed_manager.proxy_get_file(testbed_id, file_path)
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.exception(f"get_file() Error reading file")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/testbeds/<testbed_id>/file", methods=["POST"])
+    @validate_api_key
+    def save_file(testbed_id: str, user_id: str):
+        data = request.json
+        if not data.get("file_path") or data.get("content") is None:
+            return jsonify({"error": "Missing 'file_path' or 'content' in request body"}), 400
+
+        try:
+            result, status_code = testbed_manager.proxy_save_file(testbed_id, data)
+            return jsonify(result), status_code
+        except Exception as e:
+            logger.exception(f"save_file() Error saving file")
             return jsonify({"error": str(e)}), 500
 
     return app

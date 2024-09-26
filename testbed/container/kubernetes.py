@@ -176,6 +176,12 @@ class KubernetesContainer(Container):
         # Create a shell script with the commands
         script_content = "#!/bin/bash\n" + "\n".join(commands)
         self.write_file(commands_file, script_content.encode("utf-8"))
+
+        # Add logging to verify file creation
+        if not os.path.exists(commands_file):
+            logger.error(f"Failed to create commands file: {commands_file}")
+            raise FileNotFoundError(f"No such file or directory: '{commands_file}'")
+
         os.chmod(commands_file, 0o755)
 
         start_time = datetime.now()

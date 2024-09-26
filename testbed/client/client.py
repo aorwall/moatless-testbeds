@@ -157,9 +157,11 @@ class TestbedClient:
                             logger.info(finish_text)
                         return testbed
                 except Exception as e:
-                    logger.info(
+                    error_message = (
                         f"Testbed {self.testbed_id} is ready but not reachable on {base_url}: {e}"
                     )
+                    logger.error(error_message)
+                    raise RuntimeError(error_message)
 
             time.sleep(interval)
 
@@ -288,6 +290,7 @@ class TestbedClient:
             reason=reason,
             message=message,
         )
+    
     def _get_job(self):
         try:
             return self.batch_v1.read_namespaced_job(
@@ -362,6 +365,10 @@ class TestbedClient:
     def reset(self):
         self.execute(self.test_spec.reset_commands)
 
+        response = self.execute("git diff")
+        logger.debug(f"Diff after patch: \n{response.output}")
+        return response.output
+
     def apply_patch(self, patch: str) -> str:
         patch_filepath = f"/shared/patch.diff"
         if not patch.endswith('\n'):
@@ -385,9 +392,10 @@ class TestbedClient:
     ) -> TestRunResponse:
         logger.info(f"run_tests: test_files={test_files}")
 
+        output = "\n# Reset\n" + self.reset()
+
         if patch:
-            self.reset()
-            self.apply_patch(patch)
+            output += "\n# Apply patch\n" + self.apply_patch(patch)
 
         # TODO: Run self.test_spec.env_script_list after patching?
         commands = []
@@ -396,6 +404,8 @@ class TestbedClient:
 
         log = response.output.split(f"{RUN_TESTS}\n")[-1]
         test_result = parse_log(log, self.test_spec.repo)
+
+        output += response.output
 
         filtered_test_result = []
 
@@ -421,7 +431,7 @@ class TestbedClient:
 
         return TestRunResponse(
             test_results=filtered_test_result,
-            output=response.output
+            output=output
         )
 
     def run_evaluation(self, run_id: str | None = None, patch: str | None = None) -> EvaluationResult:

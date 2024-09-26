@@ -128,7 +128,10 @@ class TestSpec:
 
     @property
     def reset_commands(self):
-        return [f"git reset --hard {self.base_commit}"]
+        return [
+            "git clean -fd",
+            f"git reset --hard {self.base_commit}",
+        ]
 
     def patch_commands(self, patch_filepath: str) -> list[str]:
         return [

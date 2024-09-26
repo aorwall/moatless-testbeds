@@ -18,6 +18,8 @@ import aiohttp
 from asyncio.subprocess import create_subprocess_shell, PIPE
 from aiohttp import ClientConnectorError
 from testbed.client.client import TestbedClient
+import requests
+from kubernetes import client as k8s_client
 
 from testbed.schema import (
     CreateTestbedResponse,
@@ -33,6 +35,7 @@ from testbed.swebench.utils import load_swebench_instance
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "testbeds")
 
 logger = logging.getLogger(__name__)
+logging.getLogger('azure').setLevel(logging.WARNING)
 
 ExecResult = namedtuple("ExecResult", "exit_code,output")
 
@@ -43,6 +46,7 @@ high_cpu_instances = [
     "matplotlib__matplotlib-24149",
     "matplotlib__matplotlib-23314",
     "matplotlib__matplotlib-24334",
+    "matplotlib__matplotlib-24149",
     "matplotlib__matplotlib-26011",
     "mwaskom__seaborn-3407",
     "sympy__sympy-16988",
@@ -119,11 +123,14 @@ class TestbedManager:
             if job.metadata.labels.get("instance-id") == instance_id and job.metadata.labels.get("user-id") == user_id:
                 logger.info(f"Testbed for instance {instance_id} already exists.")
                 status = self._read_testbed_status(job.metadata.name)
-                return TestbedSummary(
-                    testbed_id=job.metadata.name,
-                    instance_id=job.metadata.labels.get("instance-id", "unknown"),
-                    status=status,
-                )
+                if status != "Unknown":
+                    return TestbedSummary(
+                        testbed_id=job.metadata.name,
+                        instance_id=job.metadata.labels.get("instance-id", "unknown"),
+                        status=status,
+                    )
+                else:
+                    logger.info(f"Testbed {job.metadata.name} status is Unknown, deleting and recreating.")
 
         return self.create_testbed(instance_id, user_id, timeout)
 
@@ -135,6 +142,7 @@ class TestbedManager:
         try:
             instance = load_swebench_instance(instance_id)
             if not instance:
+                logger.error(f"Instance {instance_id} not found")
                 raise ValueError(f"Instance {instance_id} not found")
         except Exception as e:
             logger.exception(f"Error loading instance {instance_id}")
@@ -191,6 +199,9 @@ class TestbedManager:
 
         return self._read_testbed_status_detailed(job.metadata.name)
 
+    def _extract_instance_id(self, testbed_id: str) -> str:
+        return testbed_id.rsplit('-testbed-', 1)[0]
+
     def create_client(
         self,
         testbed_id: str,
@@ -201,8 +212,18 @@ class TestbedManager:
     ) -> TestbedClient:
         logger.info(f"create_client(testbed_id: {testbed_id}, instance_id: {instance_id}, user_id: {user_id}, timeout: {timeout})")
         job = self._get_job(testbed_id)
-        if not job or job.metadata.labels.get("user-id") != user_id:
-            raise ValueError(f"Testbed {testbed_id} not found or not owned by user {user_id}")
+        service = self._get_service(testbed_id)
+        
+        if not job or job.metadata.labels.get("user-id") != user_id or not service:
+            logger.info(f"Testbed {testbed_id} not found or not owned by user {user_id}, or service is missing. Deleting and recreating.")
+            if job:
+                self.delete_testbed(testbed_id, user_id)
+            if not instance_id:
+                raise ValueError(f"Instance ID not found for testbed {testbed_id}")
+
+            self.create_testbed(instance_id, user_id, timeout)
+            job = self._get_job(testbed_id)
+            service = self._get_service(testbed_id)
 
         if not instance_id:
             instance_id = job.metadata.labels.get("instance-id")
@@ -301,19 +322,19 @@ class TestbedManager:
         test_spec = TestSpec.from_instance(instance)
 
         # TODO: Set limits in test spec?
-        if instance_id in high_cpu_instances:
-            limit_cpu = "1.2"
+        if instance_id in high_cpu_instances or instance_id.startswith("sympy"):
+            limit_cpu = "2.0"
             request_cpu = "1.0"
         else:
-            limit_cpu = "1.2"
-            request_cpu = "0.25"
+            limit_cpu = "1.0"
+            request_cpu = "0.2"
 
         if instance_id.startswith("matplotlib"):
-            limit_memory = "1Gi"
-            request_memory = "400Mi"
+            limit_memory = "1.2Gi"
+            request_memory = "800Mi"
         else:
-            limit_memory = "600Mi"
-            request_memory = "300Mi"
+            limit_memory = "1Gi"
+            request_memory = "600Mi"
 
         context = {
             "job_name": testbed_id,
@@ -343,17 +364,35 @@ class TestbedManager:
             else:
                 raise
 
-    def _read_testbed_status(
-        self, job_name: str
-    ) -> str:
+    def _read_testbed_status(self, job_name: str) -> str:
         pod_list = self.core_v1.list_namespaced_pod(
             namespace=self.namespace, label_selector=f"job-name={job_name}"
         )
+        pod_status = "Unknown"
         if pod_list.items:
             pod = pod_list.items[0]
-            return pod.status.phase if pod else "Unknown"
+            pod_status = pod.status.phase if pod else "Unknown"
+
+        service_status = self._get_service_status(job_name)
+
+        if pod_status == "Running" and service_status == "Running":
+            testbed_url = self.get_testbed_url(job_name)
+            try:
+                response = requests.get(f"{testbed_url}/health")
+                data = response.json()
+                if response.status_code == 200 and data.get("status") == "OK":
+                    return "Running"
+                else:
+                    logger.info(f"Testbed {job_name} is Running but health check failed, return Pending anyway... Status code: {response.status_code}, Response: {data}")
+                    return "Pending"
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"Connection error while checking health for {job_name}: {e}")
+                return "Pending"
+        elif pod_status == "Pending" or service_status == "Pending":
+            logger.info(f"Testbed {job_name} is Pending: Pod status: {pod_status}, Service status: {service_status}")
+            return "Pending"
         else:
-            logger.warning(f"Pod not found for job {job_name}")
+            logger.warning(f"Testbed {job_name} is Unknown: Pod status: {pod_status}, Service status: {service_status}")
             return "Unknown"
 
     def _read_testbed_status_detailed(
@@ -379,15 +418,33 @@ class TestbedManager:
                     elif container.name == "sidecar":
                         sidecar_status = status
 
+            # Get service status
+            service_status = self._get_service_status(job_name)
+
             return TestbedStatusDetailed(
                 pod_phase=pod.status.phase if pod.status else "Unknown",
                 testbed=testbed_status,
                 sidecar=sidecar_status,
+                service=service_status,  # Add service status here
             )
         else:
             logger.warning(f"Pod not found for job {job_name}")
             return None
 
+    def _get_service_status(self, testbed_id: str) -> str:
+        try:
+            service = self.core_v1.read_namespaced_service(
+                name=testbed_id, namespace=self.namespace
+            )
+            if service.spec.cluster_ip:
+                return "Running"
+            return "Pending"
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                return "Unknown"
+            else:
+                raise
+            
     def _get_container_status(self, container) -> ContainerStatus:
         state = "pending"
         reason = None
@@ -462,4 +519,47 @@ class TestbedManager:
 
         logger.info(f"Deleted {deleted_count} resources for user {user_id}")
         return deleted_count
+
+    def _get_service(self, testbed_id: str):
+        try:
+            return self.core_v1.read_namespaced_service(
+                name=testbed_id, namespace=self.namespace
+            )
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                return None
+            else:
+                raise
+
+    def get_testbed_url(self, testbed_id: str) -> str:
+        service = self.core_v1.read_namespaced_service(
+            name=testbed_id, namespace=self.namespace
+        )
+        if service.spec.cluster_ip:
+            return f"http://{service.spec.cluster_ip}:8000"
+        raise ValueError(f"Unable to find ClusterIP for testbed {testbed_id}")
+
+    def proxy_exec(self, testbed_id: str, data: dict):
+        testbed_url = self.get_testbed_url(testbed_id)
+        response = requests.post(f"{testbed_url}/exec", json=data)
+        return response.json(), response.status_code
+
+    def proxy_exec_status(self, testbed_id: str):
+        testbed_url = self.get_testbed_url(testbed_id)
+        response = requests.get(f"{testbed_url}/exec")
+        return response.json(), response.status_code
+
+    def proxy_get_file(self, testbed_id: str, file_path: str):
+        testbed_url = self.get_testbed_url(testbed_id)
+        response = requests.get(f"{testbed_url}/file", params={"file_path": file_path})
+        return response.json(), response.status_code
+
+    def proxy_save_file(self, testbed_id: str, data: dict):
+        testbed_url = self.get_testbed_url(testbed_id)
+        response = requests.post(f"{testbed_url}/file", json=data)
+        return response.json(), response.status_code
+
+    def get_testbed_status(self, testbed_id: str, user_id: str) -> dict:
+        status = self._read_testbed_status(testbed_id)
+        return {"status": status}
 
