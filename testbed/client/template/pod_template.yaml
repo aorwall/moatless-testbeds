@@ -6,6 +6,7 @@ metadata:
   labels:
     testbed-id: {{ testbed_id }}
     user-id: {{ user_id }}
+    run-id: {{ run_id }}
     instance-id: {{ instance_id }}
 spec:
   template:
@@ -58,7 +59,7 @@ spec:
             cpu: "{{ request_cpu }}"
             memory: "{{ request_memory }}"
           limits:
-            cpu: "{{ limit_cpu }}"
+            # cpu: "{{ limit_cpu }}"
             memory: "{{ limit_memory }}"
         volumeMounts:
         - name: shared-volume
@@ -106,10 +107,23 @@ spec:
             secretKeyRef:
               name: testbed-secrets
               key: AZURE_STORAGE_CONNECTION_STRING
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: testbed-secrets
+              key: AZURE_APPLICATIONINSIGHTS_CONNECTION_STRING
       nodeSelector:
         node-purpose: testbed
       restartPolicy: OnFailure
       volumes:
       - name: shared-volume
         emptyDir: {}
+      tolerations:
+      - key: "kubernetes.azure.com/scalesetpriority"
+        operator: "Equal"
+        value: "spot"
+        effect: "NoSchedule"
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
   backoffLimit: 4

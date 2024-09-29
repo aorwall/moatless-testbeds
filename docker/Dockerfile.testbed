@@ -8,8 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY testbed /app/testbed/
 
-COPY testbed/testbed/main.py /app/
-COPY docker/entrypoint.sh /app/entrypoint.sh
+COPY docker/entrypoint_testbed.sh /app/entrypoint.sh
 
 EXPOSE 8000
 

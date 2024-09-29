@@ -6,8 +6,13 @@ from testbed.client.manager import TestbedManager
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.semconv.resource import ResourceAttributes
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from azure.monitor.opentelemetry import configure_azure_monitor
+from azure.monitor.opentelemetry.exporter import ApplicationInsightsSampler
+from opentelemetry.propagate import inject
 
 from flask import Flask, request, jsonify, send_file
 from functools import wraps
@@ -37,8 +42,20 @@ def load_api_keys():
         return {}
 
 def configure_opentelemetry(app):
-    configure_azure_monitor()
-    FlaskInstrumentor().instrument_app(app)
+    custom_sampler = ApplicationInsightsSampler(
+        sampling_ratio=0.1,  # 10% sampling rate
+    )
+    
+    tracer_provider = TracerProvider(sampler=custom_sampler)
+
+    configure_azure_monitor(
+        tracer_provider=tracer_provider,
+    )
+   
+    FlaskInstrumentor().instrument_app(
+        app,
+        excluded_urls="health"
+    )
 
 def create_app():
     app = Flask(__name__)
@@ -59,8 +76,16 @@ def create_app():
             return f(user_id=user_id, *args, **kwargs)
         return decorated_function
 
+    def get_trace_context():
+        carrier = {}
+        inject(carrier)
+        return carrier
+
     @app.errorhandler(HTTPException)
     def handle_exception(e):
+        span = trace.get_current_span()
+        span.record_exception(e)
+        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
         response = e.get_response()
         error_id = str(uuid.uuid4())
         response.data = json.dumps({
@@ -74,14 +99,24 @@ def create_app():
 
     @app.errorhandler(TimeoutError)
     def handle_timeout_error(e):
+        span = trace.get_current_span()
+        span.record_exception(e)
+        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
         return jsonify({"error": "Request timed out"}), 504
 
     @app.errorhandler(ValueError)
     def handle_value_error(e):
+        span = trace.get_current_span()
+        span.record_exception(e)
+        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
         return jsonify({"error": str(e)}), 400
 
     @app.errorhandler(Exception)
     def handle_unknown_exception(e):
+        span = trace.get_current_span()
+        span.record_exception(e)
+        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+   
         error_id = str(uuid.uuid4())
         logger.exception(f"Unhandled exception occurred. Error ID: {error_id}")
         return jsonify({
@@ -106,9 +141,9 @@ def create_app():
         instance_id = data.get("instance_id")
         if not instance_id:
             return jsonify({"error": "Missing instance_id parameter"}), 400
+        run_id = data.get("run_id")
 
-        testbed = testbed_manager.get_or_create_testbed(instance_id, user_id)
-        logger.info(f"Testbed created or retrieved: id={testbed.testbed_id}, user_id={user_id}, instance_id={instance_id}")
+        testbed = testbed_manager.get_or_create_testbed(instance_id, user_id=user_id, run_id=run_id)
         return jsonify(testbed.model_dump()), 200
 
     @app.route("/testbeds/<testbed_id>", methods=["GET"])
@@ -138,7 +173,8 @@ def create_app():
         instance_id = data.get("instance_id")
 
         logger.debug(f"run_tests(testbed_id={testbed_id}, user_id={user_id}, instance_id={instance_id})")
-        client = testbed_manager.create_client(testbed_id, instance_id=instance_id, user_id=user_id)
+        trace_context = get_trace_context()
+        client = testbed_manager.create_client(testbed_id, instance_id=instance_id, user_id=user_id, trace_context=trace_context)
         client.wait_until_ready(timeout=600)
 
         result = client.run_tests(test_files, patch)
@@ -152,7 +188,8 @@ def create_app():
         instance_id = data.get("instance_id")
         logger.debug(f"run_evaluation(testbed_id={testbed_id}, user_id={user_id}, instance_id={instance_id})")
 
-        client = testbed_manager.create_client(testbed_id, instance_id=instance_id, user_id=user_id)
+        trace_context = get_trace_context()
+        client = testbed_manager.create_client(testbed_id, instance_id=instance_id, user_id=user_id, trace_context=trace_context)
         client.wait_until_ready(timeout=600)
 
         try:
@@ -189,7 +226,8 @@ def create_app():
     @validate_api_key
     def get_testbed_status(testbed_id: str, user_id: str):
         try:
-            status = testbed_manager.get_testbed_status(testbed_id, user_id)
+            trace_context = get_trace_context()
+            status = testbed_manager.get_testbed_status(testbed_id, user_id, trace_context=trace_context)
             if not status:
                 return jsonify({"error": "Testbed not found or unable to read status"}), 404
 
@@ -198,13 +236,13 @@ def create_app():
             logger.exception(f"Error getting testbed status for {testbed_id}")
             return jsonify({"error": str(e)}), 500
 
-
     @app.route("/testbeds/<testbed_id>/exec", methods=["POST"])
     @validate_api_key
     def execute_command(testbed_id: str, user_id: str):
         data = request.json
         try:
-            result, status_code = testbed_manager.proxy_exec(testbed_id, data)
+            trace_context = get_trace_context()
+            result, status_code = testbed_manager.proxy_exec(testbed_id, data, trace_context=trace_context)
             return jsonify(result), status_code
         except Exception as e:
             logger.exception(f"execute_command() Error during execution")
@@ -214,7 +252,8 @@ def create_app():
     @validate_api_key
     def get_command_status(testbed_id: str, user_id: str):
         try:
-            result, status_code = testbed_manager.proxy_exec_status(testbed_id)
+            trace_context = get_trace_context()
+            result, status_code = testbed_manager.proxy_exec_status(testbed_id, trace_context=trace_context)
             return jsonify(result), status_code
         except Exception as e:
             logger.exception(f"get_command_status() Error getting command status")
@@ -228,7 +267,8 @@ def create_app():
             return jsonify({"error": "Missing 'file_path' query parameter"}), 400
 
         try:
-            result, status_code = testbed_manager.proxy_get_file(testbed_id, file_path)
+            trace_context = get_trace_context()
+            result, status_code = testbed_manager.proxy_get_file(testbed_id, file_path, trace_context=trace_context)
             return jsonify(result), status_code
         except Exception as e:
             logger.exception(f"get_file() Error reading file")
@@ -242,10 +282,33 @@ def create_app():
             return jsonify({"error": "Missing 'file_path' or 'content' in request body"}), 400
 
         try:
-            result, status_code = testbed_manager.proxy_save_file(testbed_id, data)
+            trace_context = get_trace_context()
+            result, status_code = testbed_manager.proxy_save_file(testbed_id, data, trace_context=trace_context)
             return jsonify(result), status_code
         except Exception as e:
             logger.exception(f"save_file() Error saving file")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/testbeds/<testbed_id>/reset", methods=["POST"])
+    @validate_api_key
+    def reset_testbed(testbed_id: str, user_id: str):
+        instance_id = None
+        run_id = None
+
+        try:
+            data = request.json
+            instance_id = data.get("instance_id")
+            run_id = data.get("run_id")
+        except Exception as e:
+            logger.info(f"No JSON data provided in request body")
+        
+        try:
+            restarted = testbed_manager.restart_if_running(testbed_id, user_id, run_id, instance_id)           
+            return jsonify({
+                "restarted": restarted
+            }), 200
+        except Exception as e:
+            logger.exception(f"Error resetting testbed {testbed_id}")
             return jsonify({"error": str(e)}), 500
 
     return app

@@ -2,7 +2,8 @@ import base64
 import os
 import time
 import uuid
-
+from opentelemetry import trace
+from opentelemetry.propagate import extract
 from flask import Flask, request, jsonify, send_file
 import logging
 
@@ -10,14 +11,73 @@ from testbed.container.kubernetes import KubernetesContainer
 from testbed.schema import (
     RunCommandsRequest,
 )
+from kubernetes import config, client
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from azure.monitor.opentelemetry import configure_azure_monitor
+from azure.monitor.opentelemetry.exporter import ApplicationInsightsSampler
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s [%(levelname)s] %(message)s"
+)
+logging.getLogger().setLevel(logging.INFO)
+logging.getLogger("azure").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+
+def check_kubernetes_connection():
+    try:
+        v1 = client.CoreV1Api()
+
+        pod_name = os.environ.get("POD_NAME")
+        if not pod_name:
+            logger.warning("POD_NAME environment variable not set")
+            return
+
+        namespace = os.environ.get("KUBE_NAMESPACE")
+        if not namespace:
+            logger.warning("KUBE_NAMESPACE environment variable not set")
+            return
+
+        pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+        logger.info(f"Successfully verified pod: {pod.metadata.name}")
+    except client.exceptions.ApiException as e:
+        logger.warning(f"Failed to verify pod: {e}")
+    except Exception as e:
+        logger.error(f"Failed to connect to Kubernetes API: {e}")
+        raise
+
+def configure_opentelemetry(app):
+    connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING")
+    if connection_string:
+        resource = Resource.create(
+            attributes={
+                "service.instance.id": os.environ.get("POD_NAME"),
+                "service.name": "testbed",
+                "service.namespace": os.environ.get("KUBE_NAMESPACE"),
+                "user.id": os.environ.get("USER_ID"),
+                "instance.id": os.environ.get("INSTANCE_ID"),
+                "testbed.id": os.environ.get("TESTBED_ID"),
+            }
+        )
+        configure_azure_monitor(
+            resource=resource
+        )
+
+        FlaskInstrumentor().instrument_app(
+            app,
+            excluded_urls="health"
+        )
+    else:
+        logger.warning("APPLICATIONINSIGHTS_CONNECTION_STRING not set. No telemetry will be sent.")
 
 def create_app():
     app = Flask(__name__)
 
     container = KubernetesContainer()
+    configure_opentelemetry(app)
 
     def check_container_reachability():
         while not container.is_reachable():
@@ -25,7 +85,13 @@ def create_app():
 
         return True
 
-    check_container_reachability()
+    @app.before_request
+    def before_request():
+        # Extract the trace context from the incoming request headers
+        context = extract(request.headers)
+        # Get the current span and set it as the current context
+        span = trace.get_current_span()
+        trace.set_span_in_context(span, context)
 
     @app.route("/health", methods=["GET"])
     def health():

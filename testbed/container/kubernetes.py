@@ -23,9 +23,13 @@ from testbed.schema import (
     CommandExecutionSummary,
 )
 
+from opentelemetry import trace
+
 logger = logging.getLogger(__name__)
 
 ExecResult = namedtuple("ExecResult", "exit_code,output")
+
+tracer = trace.get_tracer(__name__)
 
 
 class KubernetesContainer(Container):
@@ -156,60 +160,70 @@ class KubernetesContainer(Container):
     def execute(
         self, commands: list[str], timeout: int = 60
     ) -> CommandExecutionResponse:
+        logger.info(f"Executing commands: {commands}")
+
         output_file = os.path.join(self.shared_dir, f"cmd_output.txt")
         complete_file = os.path.join(self.shared_dir, f"complete_cmd")
         commands_file = os.path.join(self.shared_dir, f"run_cmd.sh")
 
-        if os.path.exists(output_file) and not os.path.exists(complete_file):
-            logger.warning("Previous command execution is still running")
+        with tracer.start_as_current_span("execute_command") as span:
+            if os.path.exists(output_file) and not os.path.exists(complete_file):
+                logger.warning("Previous command execution is still running")
+                return CommandExecutionResponse(
+                    status="running",
+                    output=self.read_from_shared_volume("cmd_output.txt"),
+                )
+
+            if os.path.exists(output_file):
+                os.remove(output_file)
+
+            if os.path.exists(complete_file):
+                os.remove(complete_file)
+
+            script_content = "#!/bin/bash\n" + "\n".join(commands)
+            self.write_file(commands_file, script_content.encode("utf-8"))
+
+            if not os.path.exists(commands_file):
+                logger.error(f"Failed to create commands file: {commands_file}")
+                raise FileNotFoundError(f"No such file or directory: '{commands_file}'")
+
+            os.chmod(commands_file, 0o755)
+
+            start_time = datetime.now()
+            while not os.path.exists(output_file):
+                if (datetime.now() - start_time).seconds > 5:
+                    raise Exception(f"No output file found on {output_file} after 5 seconds. This indicates that the command was never executed.")
+
+                time.sleep(0.1)
+
             return CommandExecutionResponse(
                 status="running",
-                output=self.read_from_shared_volume("cmd_output.txt"),
             )
-
-        if os.path.exists(output_file):
-            os.remove(output_file)
-
-        if os.path.exists(complete_file):
-            os.remove(complete_file)
-
-        # Create a shell script with the commands
-        script_content = "#!/bin/bash\n" + "\n".join(commands)
-        self.write_file(commands_file, script_content.encode("utf-8"))
-
-        # Add logging to verify file creation
-        if not os.path.exists(commands_file):
-            logger.error(f"Failed to create commands file: {commands_file}")
-            raise FileNotFoundError(f"No such file or directory: '{commands_file}'")
-
-        os.chmod(commands_file, 0o755)
-
-        start_time = datetime.now()
-        while not os.path.exists(output_file):
-            if (datetime.now() - start_time).seconds > 5:
-                raise Exception(f"No output file found on {output_file} after 5 seconds. This indicates that the command was never executed.")
-
-            time.sleep(0.1)
-
-        return CommandExecutionResponse(
-            status="running",
-        )
 
     def get_execution_status(self) -> CommandExecutionResponse:
         commands_file = os.path.join(self.shared_dir, f"run_cmd.sh")
         complete_file = os.path.join(self.shared_dir, f"complete_cmd")
+        output_file = os.path.join(self.shared_dir, f"cmd_output.txt")
 
-        if os.path.exists(complete_file):
-            status = "completed"
-        elif os.path.exists(commands_file):
-            status = "running"
-        else:
-            status = "idle"
+        with tracer.start_as_current_span("get_execution_status") as span:
+            if os.path.exists(complete_file):
+                status = "completed"
+            elif os.path.exists(commands_file):
+                status = "running"
+            else:
+                status = "idle"
 
-        return CommandExecutionResponse(
-            status=status,
-            output=self.read_from_shared_volume(f"cmd_output.txt"),
-        )
+            if os.path.exists(output_file):
+                return CommandExecutionResponse(
+                    status=status,
+                    output=self.read_from_shared_volume(f"cmd_output.txt"),
+                )
+            else:
+                return CommandExecutionResponse(
+                    status=status,
+                    output="",
+                )
+
 
     def is_executing(self):
         if not self.started_at:
@@ -250,45 +264,47 @@ class KubernetesContainer(Container):
             logger.exception(f"Error writing to disk")
 
     def write_file(self, file_path: str, content: bytes):
-        logger.info(f"Writing file: {file_path}")
-        try:
-            if file_path.startswith(self.shared_dir):
-                # If the file is in the shared directory, write directly to disk
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                with open(file_path, "wb") as file:
-                    file.write(content)
-                logger.info(f"Successfully wrote file to shared volume: {file_path}")
-            else:
-                # For files outside the shared directory, use the existing method
-                encoded_content = base64.b64encode(content).decode("utf-8")
-                exec_command = [
-                    "sh",
-                    "-c",
-                    f"mkdir -p $(dirname {file_path}) && echo '{encoded_content}' | base64 -d > {file_path} && cat {file_path} | base64",
-                ]
-                resp = stream(
-                    self.core_v1.connect_get_namespaced_pod_exec,
-                    self.pod_name,
-                    self.namespace,
-                    container=self.container_name,
-                    command=exec_command,
-                    stderr=True,
-                    stdin=False,
-                    stdout=True,
-                    tty=False,
-                )
+        with tracer.start_as_current_span("write_file") as span:
+            span.set_attribute("file_path", file_path)
+            logger.info(f"Writing file: {file_path}")
+            try:
+                if file_path.startswith(self.shared_dir):
+                    # If the file is in the shared directory, write directly to disk
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    with open(file_path, "wb") as file:
+                        file.write(content)
+                    logger.info(f"Successfully wrote file to shared volume: {file_path}")
+                else:
+                    # For files outside the shared directory, use the existing method
+                    encoded_content = base64.b64encode(content).decode("utf-8")
+                    exec_command = [
+                        "sh",
+                        "-c",
+                        f"mkdir -p $(dirname {file_path}) && echo '{encoded_content}' | base64 -d > {file_path} && cat {file_path} | base64",
+                    ]
+                    resp = stream(
+                        self.core_v1.connect_get_namespaced_pod_exec,
+                        self.pod_name,
+                        self.namespace,
+                        container=self.container_name,
+                        command=exec_command,
+                        stderr=True,
+                        stdin=False,
+                        stdout=True,
+                        tty=False,
+                    )
 
-                # Decode the response and compare with original content
-                written_content = base64.b64decode(resp.strip())
-                if written_content != content:
-                    raise Exception("Written content does not match original content")
+                    # Decode the response and compare with original content
+                    written_content = base64.b64decode(resp.strip())
+                    if written_content != content:
+                        raise Exception("Written content does not match original content")
 
-                logger.info(
-                    f"Successfully wrote and verified file in testbed container: {file_path}"
-                )
-        except Exception as e:
-            logger.exception(f"Error writing file: {file_path}")
-            raise
+                    logger.info(
+                        f"Successfully wrote and verified file in testbed container: {file_path}"
+                    )
+            except Exception as e:
+                logger.exception(f"Error writing file: {file_path}")
+                raise
 
     def read_file(self, file_path: str) -> str:
         logger.info(f"Reading file from testbed container: {file_path}")

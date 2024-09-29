@@ -20,6 +20,8 @@ from aiohttp import ClientConnectorError
 from testbed.client.client import TestbedClient
 import requests
 from kubernetes import client as k8s_client
+from opentelemetry import trace
+from opentelemetry.propagate import inject
 
 from testbed.schema import (
     CreateTestbedResponse,
@@ -116,28 +118,31 @@ class TestbedManager:
                 )
         return testbeds
 
-    def get_or_create_testbed(self, instance_id: str, user_id: str = "default", timeout: int = 60) -> Optional[TestbedSummary]:
-        logger.info(f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id})")
+    def get_or_create_testbed(self, instance_id: str, user_id: str = "default", timeout: int = 60, run_id: str = "default", trace_context: dict | None = None) -> Optional[TestbedSummary]:
+        logger.info(f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id}, run_id: {run_id})")
         job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
         for job in job_list.items:
-            if job.metadata.labels.get("instance-id") == instance_id and job.metadata.labels.get("user-id") == user_id:
-                logger.info(f"Testbed for instance {instance_id} already exists.")
+            if (job.metadata.labels.get("instance-id") == instance_id and 
+                job.metadata.labels.get("user-id") == user_id and
+                job.metadata.labels.get("run-id") == run_id):
+                logger.info(f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id}, run_id: {run_id}) found existing testbed.")
                 status = self._read_testbed_status(job.metadata.name)
                 if status != "Unknown":
                     return TestbedSummary(
                         testbed_id=job.metadata.name,
                         instance_id=job.metadata.labels.get("instance-id", "unknown"),
                         status=status,
+                        run_id=run_id,
                     )
                 else:
-                    logger.info(f"Testbed {job.metadata.name} status is Unknown, deleting and recreating.")
+                    logger.info(f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id}, run_id: {run_id}) found existing testbed {job.metadata.name} with status Unknown, deleting and recreating.")
 
-        return self.create_testbed(instance_id, user_id, timeout)
+        return self.create_testbed(instance_id, user_id, timeout, run_id, trace_context)
 
     def create_testbed(
-        self, instance_id: str, user_id: str = "default", timeout: int = 60
+        self, instance_id: str, user_id: str = "default", timeout: int = 60, run_id: str = "default", trace_context: dict | None = None
     ) -> TestbedSummary:
-        logger.info(f"create_testbed(user: {user_id}, instance_id: {instance_id})")
+        logger.info(f"create_testbed(user: {user_id}, instance_id: {instance_id}, run_id: {run_id}) creating new testbed.")
         start_time = time.time()
         try:
             instance = load_swebench_instance(instance_id)
@@ -149,26 +154,28 @@ class TestbedManager:
             raise RuntimeError(f"Error loading instance {instance_id}")
 
         try:
-            testbed_id = self._generate_test_id(instance_id)
+            testbed_id = self._generate_test_id(instance_id, user_id, run_id)
             job_manifest = self._create_job_manifest(
-                instance=instance, user_id=user_id, testbed_id=testbed_id
+                instance=instance, user_id=user_id, testbed_id=testbed_id, run_id=run_id
             )
 
             self.batch_v1.create_namespaced_job(
                 body=job_manifest, namespace=self.namespace
             )
 
-            service_manifest = self._create_service_manifest(testbed_id)
+            service_manifest = self._create_service_manifest(testbed_id, user_id, run_id, instance_id)
             self.core_v1.create_namespaced_service(
                 body=service_manifest, namespace=self.namespace
             )
 
             job = self._get_job(testbed_id)
-            while not job:
+            service = self._get_service(testbed_id)
+            while not job or not service:
                 if time.time() - start_time > timeout:
-                    raise TimeoutError(f"Job creation of job {testbed_id} timed out")
+                    raise TimeoutError(f"Creation of job or service {testbed_id} timed out")
                 time.sleep(0.1)
                 job = self._get_job(testbed_id)
+                service = self._get_service(testbed_id)
 
             logger.info(
                 f"create_testbed(user: {user_id}, instance_id: {instance_id}, testbed_id: {testbed_id}) Job and Service created successfully in namespace {self.namespace}."
@@ -180,6 +187,7 @@ class TestbedManager:
                 testbed_id=job.metadata.name,
                 instance_id=job.metadata.labels.get("instance-id", "unknown"),
                 status=status,
+                run_id=run_id,
             )
         except client.exceptions.ApiException as e:
             if e.reason == "Conflict":
@@ -191,7 +199,7 @@ class TestbedManager:
                 )
                 raise RuntimeError("Error creating job or service")
 
-    def get_testbed(self, testbed_id: str, user_id: str = "default") -> Optional[TestbedDetailed]:
+    def get_testbed(self, testbed_id: str, user_id: str = "default", trace_context: dict | None = None) -> Optional[TestbedDetailed]:
         logger.info(f"get_testbed(testbed_id: {testbed_id}, user_id: {user_id})")
         job = self._get_job(testbed_id)
         if not job or job.metadata.labels.get("user-id") != user_id:
@@ -208,20 +216,22 @@ class TestbedManager:
         instance_id: str | None = None,
         user_id: str = "default",
         timeout: float = 30,
-        log_dir: str | None = None
+        log_dir: str | None = None,
+        run_id: str = "default",
+        trace_context: dict | None = None
     ) -> TestbedClient:
-        logger.info(f"create_client(testbed_id: {testbed_id}, instance_id: {instance_id}, user_id: {user_id}, timeout: {timeout})")
+        logger.info(f"create_client(testbed_id: {testbed_id}, instance_id: {instance_id}, user_id: {user_id}, timeout: {timeout}, run_id: {run_id})")
         job = self._get_job(testbed_id)
         service = self._get_service(testbed_id)
         
-        if not job or job.metadata.labels.get("user-id") != user_id or not service:
-            logger.info(f"Testbed {testbed_id} not found or not owned by user {user_id}, or service is missing. Deleting and recreating.")
+        if not job or job.metadata.labels.get("user-id") != user_id or job.metadata.labels.get("run-id") != run_id or not service:
+            logger.info(f"Testbed {testbed_id} not found or not owned by user {user_id} with run_id {run_id}, or service is missing. Deleting and recreating.")
             if job:
-                self.delete_testbed(testbed_id, user_id)
+                self.delete_testbed(testbed_id, user_id, run_id)
             if not instance_id:
                 raise ValueError(f"Instance ID not found for testbed {testbed_id}")
 
-            self.create_testbed(instance_id, user_id, timeout)
+            self.create_testbed(instance_id, user_id, timeout, run_id)
             job = self._get_job(testbed_id)
             service = self._get_service(testbed_id)
 
@@ -239,7 +249,8 @@ class TestbedManager:
             log_dir=log_dir,
             ignored_tests=self.ignored_tests.get(instance_id, {}),
             in_cluster=self.in_cluster,
-            namespace=self.namespace
+            namespace=self.namespace,
+            trace_context=trace_context
         )
 
     def delete_testbed(self, testbed_id: str, user_id: str = "default"):
@@ -281,7 +292,7 @@ class TestbedManager:
             logger.exception(error_message)
             raise RuntimeError(error_message)
 
-    def delete_all_testbeds(self, user_id: str = "default"):
+    def delete_all_testbeds(self, user_id: str = "default", trace_context: dict | None = None):
         logger.info(f"Deleting all testbeds for user {user_id}")
         job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
 
@@ -307,16 +318,18 @@ class TestbedManager:
         characters = string.ascii_lowercase + string.digits
         return "".join(random.choice(characters) for _ in range(length))
 
-    def _generate_test_id(self, instance_id: str) -> str:
+    def _generate_test_id(self, instance_id: str, user_id: str, run_id: str = "default") -> str:
         suffix = self._generate_kubernetes_like_suffix()
         instance_name = instance_id.replace("__", "-")
-        return f"{instance_name}-testbed-{suffix}"
+        user_prefix = user_id[:4].lower()
+        run_prefix = run_id[:4].lower()
+        return f"{instance_name}-{user_prefix}-{run_prefix}-{suffix}"
 
     def _config_map_name(self, instance_id: str) -> str:
         return f"instance-{instance_id.replace('_', '-')}-configmap"
 
     def _create_job_manifest(
-        self, instance: SWEbenchInstance, user_id: str, testbed_id: str
+        self, instance: SWEbenchInstance, user_id: str, testbed_id: str, run_id: str
     ) -> str:
         instance_id = instance.instance_id
         test_spec = TestSpec.from_instance(instance)
@@ -342,6 +355,7 @@ class TestbedManager:
             "instance_id": instance_id,
             "testbed_id": testbed_id,
             "user_id": user_id,
+            "run_id": run_id,
             "testbed_image": f"moatless.azurecr.io/sweb.eval.x86_64.{instance_id}",
             "sidecar_image": "aorwall/moatless-testbed-sidecar:latest",
             "limit_cpu": limit_cpu,
@@ -364,7 +378,7 @@ class TestbedManager:
             else:
                 raise
 
-    def _read_testbed_status(self, job_name: str) -> str:
+    def _read_testbed_status(self, job_name: str, trace_context: dict | None = None) -> str:
         pod_list = self.core_v1.list_namespaced_pod(
             namespace=self.namespace, label_selector=f"job-name={job_name}"
         )
@@ -378,7 +392,10 @@ class TestbedManager:
         if pod_status == "Running" and service_status == "Running":
             testbed_url = self.get_testbed_url(job_name)
             try:
-                response = requests.get(f"{testbed_url}/health")
+                headers = {}
+                if trace_context:
+                    inject(headers, carrier=trace_context)
+                response = requests.get(f"{testbed_url}/health", headers=headers)
                 data = response.json()
                 if response.status_code == 200 and data.get("status") == "OK":
                     return "Running"
@@ -386,7 +403,7 @@ class TestbedManager:
                     logger.info(f"Testbed {job_name} is Running but health check failed, return Pending anyway... Status code: {response.status_code}, Response: {data}")
                     return "Pending"
             except requests.exceptions.ConnectionError as e:
-                logger.warning(f"Connection error while checking health for {job_name}: {e}")
+                logger.info(f"Connection error while checking health for {job_name}: {e}")
                 return "Pending"
         elif pod_status == "Pending" or service_status == "Pending":
             logger.info(f"Testbed {job_name} is Pending: Pod status: {pod_status}, Service status: {service_status}")
@@ -441,7 +458,7 @@ class TestbedManager:
             return "Pending"
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                return "Unknown"
+                return "NotFound"
             else:
                 raise
             
@@ -478,16 +495,19 @@ class TestbedManager:
             return service.status.load_balancer.ingress[0].ip
         raise ValueError(f"No external IP found for testbed {testbed_id}")
 
-    def _create_service_manifest(self, testbed_id: str) -> str:
+    def _create_service_manifest(self, testbed_id: str, user_id: str, run_id: str, instance_id: str) -> str:
         context = {
             "testbed_id": testbed_id,
+            "user_id": user_id,
+            "run_id": run_id,
+            "instance_id": instance_id,
             "namespace": self.namespace,
             "in_cluster": self.in_cluster,
         }
         manifest_yaml = self.service_template.render(context)
         return yaml.safe_load(manifest_yaml)
 
-    def cleanup_user_resources(self, user_id: str):
+    def cleanup_user_resources(self, user_id: str, trace_context: dict | None = None):
         logger.info(f"Cleaning up all resources for user {user_id}")
         deleted_count = 0
 
@@ -539,27 +559,118 @@ class TestbedManager:
             return f"http://{service.spec.cluster_ip}:8000"
         raise ValueError(f"Unable to find ClusterIP for testbed {testbed_id}")
 
-    def proxy_exec(self, testbed_id: str, data: dict):
+    def proxy_exec(self, testbed_id: str, data: dict, trace_context: dict | None = None):
+        headers = {}
+        if trace_context:
+            inject(headers, trace_context)
         testbed_url = self.get_testbed_url(testbed_id)
-        response = requests.post(f"{testbed_url}/exec", json=data)
+        response = requests.post(f"{testbed_url}/exec", json=data, headers=headers)
+        response.raise_for_status()
         return response.json(), response.status_code
 
-    def proxy_exec_status(self, testbed_id: str):
+    def proxy_exec_status(self, testbed_id: str, trace_context: dict | None = None):
+        headers = {}
+        if trace_context:
+            inject(headers, trace_context)
         testbed_url = self.get_testbed_url(testbed_id)
-        response = requests.get(f"{testbed_url}/exec")
+        response = requests.get(f"{testbed_url}/exec", headers=headers)
+        response.raise_for_status()
         return response.json(), response.status_code
 
-    def proxy_get_file(self, testbed_id: str, file_path: str):
+    def proxy_get_file(self, testbed_id: str, file_path: str, trace_context: dict | None = None):
+        headers = {}
+        if trace_context:
+            inject(headers, trace_context)
         testbed_url = self.get_testbed_url(testbed_id)
-        response = requests.get(f"{testbed_url}/file", params={"file_path": file_path})
+        response = requests.get(f"{testbed_url}/file", params={"file_path": file_path}, headers=headers)
+        response.raise_for_status()
         return response.json(), response.status_code
 
-    def proxy_save_file(self, testbed_id: str, data: dict):
+    def proxy_save_file(self, testbed_id: str, data: dict, trace_context: dict | None = None):
+        headers = {}
+        if trace_context:
+            inject(headers, trace_context)
         testbed_url = self.get_testbed_url(testbed_id)
-        response = requests.post(f"{testbed_url}/file", json=data)
+        response = requests.post(f"{testbed_url}/file", json=data, headers=headers)
+        response.raise_for_status()
         return response.json(), response.status_code
 
-    def get_testbed_status(self, testbed_id: str, user_id: str) -> dict:
+    def get_testbed_status(self, testbed_id: str, user_id: str, trace_context: dict | None = None) -> dict:
         status = self._read_testbed_status(testbed_id)
         return {"status": status}
+
+    def restart_if_running(self, testbed_id: str, user_id: str, run_id: str | None = None, instance_id: str | None = None, timeout: float = 2.0) -> bool:        
+        try:
+            status_code = None
+            status_response = None
+            try:
+                status_response, status_code = self.proxy_exec_status(testbed_id)
+            except requests.HTTPError as e:
+                logger.warning(f"Failed to get exec status for testbed {testbed_id}. Status code: {e.response.status_code}. Response: {e.response.text}")
+                
+                if not instance_id or not run_id:
+                    logger.warning(f"Testbed is not running. Instance ID and run ID are required to re-create the testbed")
+                    raise e
+
+                try:
+                    self.delete_testbed(testbed_id, user_id=user_id)
+                except Exception as delete_error:
+                    logger.info(f"Failed to delete testbed {testbed_id}: {str(delete_error)}")
+
+                try:
+                    self.create_testbed(instance_id=instance_id, user_id=user_id, timeout=timeout, run_id=run_id)
+                    logger.info(f"Successfully re-created testbed {testbed_id}")
+                    return True
+                except Exception as create_error:
+                    logger.error(f"Failed to re-create testbed {testbed_id}: {str(create_error)}")
+                    raise RuntimeError(f"Failed to re-create testbed {testbed_id}: {str(create_error)}")
+
+            if status_response and status_response.get('status') == 'running':
+                logger.info(f"Testbed {testbed_id} is running. Initiating pod restart.")
+                
+                # Find the pod associated with the job
+                pod_list = self.core_v1.list_namespaced_pod(
+                    namespace=self.namespace,
+                    label_selector=f"job-name={testbed_id}"
+                )
+                
+                if not pod_list.items:
+                    logger.error(f"No pod found for testbed {testbed_id}")
+                    return False
+                
+                pod = pod_list.items[0]
+                pod_name = pod.metadata.name
+
+                # Delete the pod (Kubernetes will automatically create a new one)
+                self.core_v1.delete_namespaced_pod(
+                    name=pod_name,
+                    namespace=self.namespace,
+                    body=k8s_client.V1DeleteOptions(
+                        grace_period_seconds=0,
+                        propagation_policy='Background'
+                    )
+                )
+                
+                logger.info(f"Deleted pod {pod_name} for testbed {testbed_id}")
+
+                # Wait for the new pod to be ready
+                start_time = time.time()
+                while time.time() - start_time < timeout:
+                    new_pod_list = self.core_v1.list_namespaced_pod(
+                        namespace=self.namespace,
+                        label_selector=f"job-name={testbed_id}"
+                    )
+                    if new_pod_list.items and new_pod_list.items[0].status.phase == 'Running':
+                        logger.info(f"New pod for testbed {testbed_id} is running")
+                        return True
+                    time.sleep(0.5)
+
+                logger.warning(f"Timed out waiting for new pod of testbed {testbed_id} to be ready")
+                return False
+            else:
+                return False
+
+        except Exception as e:
+            logger.exception(f"Error while trying to restart testbed {testbed_id}: {str(e)}")
+            return False
 

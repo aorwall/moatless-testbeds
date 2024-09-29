@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from argparse import ArgumentTypeError
 from pathlib import Path
@@ -11,6 +12,9 @@ from testbed.swebench.constants import (
     NON_TEST_EXTS,
 )
 
+
+logger = logging.getLogger(__name__)
+
 ### MARK - Patch Correction
 PATCH_PATTERN = re.compile(
     r"(?:diff[\w\_\.\ \/\-]+\n)?\-\-\-\s+a\/(?:.*?)\n\+\+\+\s+b\/(?:.*?)(?=diff\ |\-\-\-\ a\/|\Z)",
@@ -21,6 +25,7 @@ PATCH_HUNK_PATTERN = re.compile(
     r"\@\@\s+\-(\d+),(\d+)\s+\+(\d+),(\d+)\s+\@\@(.+?)(?=diff\ |\-\-\-\ a\/|\@\@\ \-|\Z)",
     re.DOTALL,
 )
+
 
 # Global variable to store the dataset
 _SWEBENCH_DATASET = None
@@ -38,17 +43,12 @@ def load_swebench_instance(
         "lite",
     }:
         name = "princeton-nlp/SWE-bench_Lite"
-    dataset = cast(Dataset, load_dataset(name, split=split))
 
-    for instance in dataset:
-        if instance["instance_id"] == instance_id:
-            if "FAIL_TO_PASS" in instance and isinstance(instance["FAIL_TO_PASS"], str):
-                instance["fail_to_pass"] = eval(instance["FAIL_TO_PASS"])
-                del instance["FAIL_TO_PASS"]
-            if "PASS_TO_PASS" in instance and isinstance(instance["PASS_TO_PASS"], str):
-                instance["pass_to_pass"] = eval(instance["PASS_TO_PASS"])
-                del instance["PASS_TO_PASS"]
-            return SWEbenchInstance(**instance)
+    instances = load_swebench_dataset(name, split)
+
+    for instance in instances:
+        if instance.instance_id == instance_id:
+            return instance
 
     return None
 
@@ -72,12 +72,13 @@ def load_swebench_dataset(
         # Update the local file path to use /app directory
         local_file = Path("/app/swebench_dataset.json")
         if local_file.exists():
-            print(f"Loading dataset from local file: {local_file.absolute()}")
+            logger.info(f"Loading dataset from local file: {local_file.absolute()}")
             with local_file.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             _SWEBENCH_DATASET = [SWEbenchInstance(**instance) for instance in data]
             return _SWEBENCH_DATASET
 
+    logger.warning(f"Loading dataset from Hugging Face Datasets: {name}")
     # For other datasets or if local file doesn't exist, proceed with original loading method
     # Load from local .json/.jsonl file
     if name.endswith(".json") or name.endswith(".jsonl"):
