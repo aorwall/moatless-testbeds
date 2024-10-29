@@ -1,31 +1,53 @@
+"""
+This file is adapted from SWE-bench:
+https://github.com/princeton-nlp/SWE-bench/blob/main/swebench/harness/test_spec.py
+
+MIT License
+
+Copyright (c) 2023 Carlos E Jimenez, John Yang, Alexander Wettig, Shunyu Yao,
+Kexin Pei, Ofir Press, Karthik R Narasimhan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
 import hashlib
-import json
 import logging
 import platform
 import re
 from dataclasses import dataclass
-from typing import Any, Union, Tuple, Optional
+from typing import Optional
 
-from testbed.schema import SWEbenchInstance, EvaluationResult, TestsStatus, TestResult, EvalTestResult
+from testbed.schema import SWEbenchInstance, TestsStatus, EvalTestResult
 from testbed.swebench.constants import (
     MAP_REPO_TO_INSTALL,
     MAP_REPO_VERSION_TO_SPECS,
     USE_X86,
     NON_TEST_EXTS,
     APPLY_PATCH_FAIL,
-    RESET_FAILED,
-    TESTS_ERROR,
-    TESTS_TIMEOUT,
     APPLY_PATCH_PASS,
     KEY_INSTANCE_ID,
     FAIL_TO_PASS,
     PASS_TO_PASS,
-    ResolvedStatus,
     RUN_TESTS,
 )
 from testbed.swebench.grading import get_eval_tests_report, get_resolution_status
-from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER, parse_traceback, parse_log
-from testbed.swebench.utils import get_test_directives
+from testbed.swebench.log_parsers import parse_log
 
 DIFF_MODIFIED_FILE_REGEX = r"--- a/(.*)"
 
@@ -74,7 +96,6 @@ class TestSpec:
             pass_to_pass=instance.pass_to_pass,
             arch=arch,
         )
-
 
     @property
     def eval_script(self):
@@ -225,10 +246,7 @@ class TestSpec:
                 *directives,
             ]
         )
-        return [
-            f"echo '{RUN_TESTS}'",
-            test_command
-        ]
+        return [f"echo '{RUN_TESTS}'", test_command]
 
     @property
     def eval_script_list(self) -> list[str]:
@@ -239,9 +257,11 @@ class TestSpec:
         directives = self.get_test_patch_files()
         test_script = self.test_script(directives)
 
-        eval_commands = ([reset_tests_command, apply_test_patch_command] +
-                         test_script +
-                         [reset_tests_command])
+        eval_commands = (
+            [reset_tests_command, apply_test_patch_command]
+            + test_script
+            + [reset_tests_command]
+        )
 
         return eval_commands
 

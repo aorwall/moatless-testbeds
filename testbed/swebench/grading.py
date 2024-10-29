@@ -1,25 +1,35 @@
-import os
-from pathlib import Path
+"""
+This file is adapted from SWE-bench:
+https://github.com/princeton-nlp/SWE-bench/blob/main/swebench/harness/grading.py
+
+MIT License
+
+Copyright (c) 2023 Carlos E Jimenez, John Yang, Alexander Wettig, Shunyu Yao,
+Kexin Pei, Ofir Press, Karthik R Narasimhan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
 from typing import Any
 
-from testbed.swebench.constants import (
-    APPLY_PATCH_FAIL,
-    APPLY_PATCH_PASS,
-    FAIL_TO_FAIL,
-    FAIL_TO_PASS,
-    KEY_INSTANCE_ID,
-    PASS_TO_FAIL,
-    PASS_TO_PASS,
-    RESET_FAILED,
-    TESTS_ERROR,
-    TESTS_TIMEOUT,
-    ResolvedStatus
-)
-from testbed.swebench.log_parsers import MAP_REPO_TO_PARSER
 from testbed.schema import TestResult, TestStatus
-
-from typing import Dict, List, Any
-
+from testbed.swebench.constants import FAIL_TO_PASS, PASS_TO_PASS, ResolvedStatus
 
 IGNORE_TESTS = ["[100%]", "[", "[100%]------------------------------"]
 
@@ -49,8 +59,7 @@ def test_failed(case: str, sm: dict[str, str]) -> bool:
 
 
 def get_eval_tests_report(
-    eval_results: list[TestResult],
-    gold_results: dict[str, list[str]]
+    eval_results: list[TestResult], gold_results: dict[str, list[str]]
 ) -> dict[str, dict[str, list[str]]]:
     """
     Create a report based on failure/pass change from gold results to eval results.

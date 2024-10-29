@@ -52,8 +52,9 @@ __azurite_db*__.json
 
 .idea/
 .vscode
-
+instances
 playground
-.ipynb_checkpoints/
-Pipfile
-testbed.egg-info
+moatless_testbeds.egg-info
+test_logs
+.ipynb_checkpoints
+__pycache__

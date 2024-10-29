@@ -2,10 +2,7 @@ from testbed.schema import TestResult, TestStatus, TestRunResponse
 
 
 def test_deserialize_test_result():
-    result = TestResult(
-        name="test",
-        status=TestStatus.FAILED
-    )
+    result = TestResult(name="test", status=TestStatus.FAILED)
 
     response = TestRunResponse(test_results=[result])
     print(response.model_dump_json(indent=2))

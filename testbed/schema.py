@@ -1,7 +1,5 @@
-from datetime import datetime
 from enum import Enum
 from typing import Optional, Literal, Dict, List, Any
-from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -104,22 +102,20 @@ class TestResult(BaseModel):
     file_path: Optional[str] = None
     method: Optional[str] = None
     failure_output: Optional[str] = None
-    stacktrace: List[TraceItem] = Field(default_factory=list, description="List of stack trace items")
+    stacktrace: List[TraceItem] = Field(
+        default_factory=list, description="List of stack trace items"
+    )
 
-    @model_validator(mode='before')
+    @model_validator(mode="before")
     def convert_status_to_enum(cls, values):
-        if isinstance(values.get('status'), str):
-            values['status'] = TestStatus(values['status'])
+        if isinstance(values.get("status"), str):
+            values["status"] = TestStatus(values["status"])
         return values
 
 
 class TestRunResponse(BaseModel):
-    test_results: List[TestResult] = Field(
-        ..., description="List of test results"
-    )
-    output: Optional[str] = Field(
-        default=None, description="Output of the test run"
-    )
+    test_results: List[TestResult] = Field(..., description="List of test results")
+    output: Optional[str] = Field(default=None, description="Output of the test run")
 
 
 class EvalTestResult(BaseModel):
@@ -130,9 +126,7 @@ class EvalTestResult(BaseModel):
 
 
 class TestsStatus(BaseModel):
-    status: ResolvedStatus = Field(
-        ..., description="Whether the problem was resolved"
-    )
+    status: ResolvedStatus = Field(..., description="Whether the problem was resolved")
     fail_to_pass: EvalTestResult = Field(
         default_factory=TestResult, description="Tests that changed from fail to pass"
     )
@@ -142,7 +136,7 @@ class TestsStatus(BaseModel):
 
 
 class EvaluationResult(BaseModel):
-    run_id: str = Field(..., description="Unique identifier for the evaluation run")
+    run_id: Optional[str] = Field(None, description="Unique identifier for the evaluation run")
     instance_id: str = Field(..., description="ID of the SWE-bench instance")
     patch_applied: bool = Field(
         default=False, description="Whether the patch was successfully applied"

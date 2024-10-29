@@ -1,13 +1,14 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="testbed",
-    version="0.1.0",
+    name="moatless-testbeds",
+    version="0.0.1",
     packages=find_packages(),
     install_requires=[
         "requests",
         "pydantic",
-        "jinja2",
-        "kubernetes"
+        "typing-extensions",
+        "datasets"
     ],
+    python_requires=">=3.9",
 )

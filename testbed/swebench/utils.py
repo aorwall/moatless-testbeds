@@ -1,3 +1,31 @@
+"""
+This file is adapted from SWE-bench:
+https://github.com/princeton-nlp/SWE-bench/blob/main/swebench/harness/utils.py
+
+MIT License
+
+Copyright (c) 2023 Carlos E Jimenez, John Yang, Alexander Wettig, Shunyu Yao,
+Kexin Pei, Ofir Press, Karthik R Narasimhan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
 import json
 import logging
 import re
@@ -11,7 +39,6 @@ from testbed.schema import SWEbenchInstance
 from testbed.swebench.constants import (
     NON_TEST_EXTS,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +57,20 @@ PATCH_HUNK_PATTERN = re.compile(
 # Global variable to store the dataset
 _SWEBENCH_DATASET = None
 
+
 def load_swebench_instance(
     instance_id: str, name="princeton-nlp/SWE-bench_Lite", split="test"
 ) -> Optional[SWEbenchInstance]:
+    # Try to load from individual instance file first
+    instance_path = Path("/app/instances") / f"{instance_id}.json"
+    if instance_path.exists():
+        logger.info(f"Loading instance from file: {instance_path.absolute()}")
+        with instance_path.open("r", encoding="utf-8") as f:
+            instance_data = json.load(f)
+            return SWEbenchInstance(**instance_data)
+
+    logger.info(f"Loading instance from dataset: {name} {split}")
+    # Fall back to original loading method
     if name.lower() in {"swe-bench", "swebench", "swe_be"}:
         name = "princeton-nlp/SWE-bench"
     elif name.lower() in {
@@ -50,6 +88,7 @@ def load_swebench_instance(
         if instance.instance_id == instance_id:
             return instance
 
+    logger.warning(f"Instance {instance_id} not found in dataset")
     return None
 
 
@@ -78,7 +117,7 @@ def load_swebench_dataset(
             _SWEBENCH_DATASET = [SWEbenchInstance(**instance) for instance in data]
             return _SWEBENCH_DATASET
 
-    logger.warning(f"Loading dataset from Hugging Face Datasets: {name}")
+    logger.info(f"Loading dataset from Hugging Face Datasets: {name}")
     # For other datasets or if local file doesn't exist, proceed with original loading method
     # Load from local .json/.jsonl file
     if name.endswith(".json") or name.endswith(".jsonl"):
@@ -112,7 +151,6 @@ def load_swebench_dataset(
         instances.append(SWEbenchInstance(**instance))
 
     return instances
-
 
 
 def get_first_idx(charlist):

@@ -1,132 +1,151 @@
-# Client-Testbed Architecture with Kubernetes and ZeroMQ
+# Moatless Testbeds
+Moatless Testbeds enables you to run testbeds as isolated pods in a Kubernetes cluster, orchestrated through a central API.
 
-## Overview
+While initially tested with SWE-Bench's docker containerization solution, it supports any Docker image that meets the basic requirements:
 
-This document describes the architecture of the Client-Testbed system, which utilizes Kubernetes for orchestration and ZeroMQ for communication. The system is designed to create isolated evaluation environments (testbeds) and facilitate communication between clients and these testbeds.
+- Contains a git repository in the `/testbeds` directory for applying patches
+- Supports running tests with specific commands (e.g., `pytest [path to test file]`)
 
-## Key Components
-
-1. TestbedManager
-2. TestbedClient
-3. Server
-4. ZeroMQCommunicator
-5. Testbed
-
-## Kubernetes Integration
-
-The system leverages Kubernetes for managing and orchestrating testbed environments:
-
-- **TestbedManager**: Interacts with the Kubernetes API to create and manage testbed instances.
-- **Kubernetes Job**: Each testbed is created as a Kubernetes Job, ensuring the testbed runs to completion.
-- **Kubernetes Service**: A LoadBalancer service is created for each testbed to expose the ZeroMQ ports to external clients.
-- **Containers**:
-  - Testbed Container: Runs the actual evaluation code.
-  - Sidecar Container: Handles communication and manages the testbed lifecycle.
-
-## ZeroMQ Communication
-
-ZeroMQ is used for efficient, asynchronous communication between the client and the testbed. The system uses two patterns:
-
-1. **REQ-REP Pattern**: Used for ping-pong communication to check connectivity.
-   - **REQ (Client)**: Sends ping requests.
-   - **REP (Server)**: Responds with pong messages.
-
-2. **PUB-SUB Pattern**: Used for run_evaluation and result communication.
-   - **Publisher (PUB)**: The server (testbed) publishes evaluation results.
-   - **Subscriber (SUB)**: The client subscribes to messages from a specific testbed.
-
-## Workflow
-
-### 1. Testbed Creation
+#### Usage Example
 
 ```python
-def create_testbed(self, instance_id: str, user_id: str | None = None) -> CreateTestbedResponse:
-    # ... (code to create Kubernetes Job and Service)
-    return CreateTestbedResponse(testbed_id=testbed_id)
+from moatless_testbeds import TestbedSDK
+
+sdk = TestbedSDK(
+    base_url="http://<API-IP>",
+    api_key="<API-KEY>"
+)
+
+testbed = sdk.create_client(instance_id="<INSTANCE-ID>")
+testbed.wait_until_ready()
+
+test_files = ["path/to/test_file.py"]
+result = testbed.run_tests(test_files)
+
+print(result.model_dump_json(indent=2))
 ```
 
-- The TestbedManager creates a Kubernetes Job and Service for a new testbed.
-- The Job runs two containers: the testbed and the sidecar.
-- The Service exposes the ZeroMQ ports (5555 for PUB, 5556 for SUB).
+## Installation
 
-### 2. Client Connection
+### Prerequisites
 
-```python
-def create_client(self, testbed_id: str, timeout: float = 30) -> TestbedClient:
-    # ... (code to create TestbedClient)
-    return TestbedClient(testbed_id=testbed_id, pub_address=pub_address, sub_address=sub_address)
+- Docker installed and configured
+- kubectl configured with access to your Kubernetes cluster
+- envsubst utility installed
+
+### Installation Steps
+
+The easiest way to install is using the provided install script:
+
+```bash
+# Clone the repository
+git clone https://github.com/aorwall/moatless-testbeds.git
+cd moatless-testbeds
+
+# Install Testbeds SDK
+pip install -e .
+
+# Optional: Set environment variables only if using custom images
+# If not set, will use default public images
+# export KUBERNETES_NAMESPACE=testbeds  # default: testbeds
+# export DOCKER_REGISTRY=your-registry  # default: aorwall
+
+# Run the install script
+./scripts/install.sh
 ```
 
-- The TestbedManager creates a TestbedClient with the external IP and ports of the testbed's Service.
-- The TestbedClient initializes a ZeroMQCommunicator to handle messaging.
+The API will be available at `http://<EXTERNAL-IP>`.
 
-### 3. Communication Flow
-The client and server communicate using ZeroMQ's PUB-SUB pattern, with an additional ping-pong mechanism for checking connectivity.
+## Run evaluation
 
-#### Client to Server (Ping):
+The evaluation script allows you to test gold patches and verify that your setup is working correctly.
 
-```python
-def ping(self, timeout=30):
-    self.communicator.send_message(message_type="ping", data={})
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        messages = self.communicator.receive_messages()
-        for message in messages:
-            if message.type == "pong":
-                return True
-        time.sleep(1)
-    return False
+### Prerequisites
+
+Make sure you have the following environment variables set:
+- `TESTBED_API_IP`: The IP address of your API service
+- `NAMESPACE`: The Kubernetes namespace where the API is deployed (default: testbeds)
+- `TESTBED_API_KEY`: Your API key (if API key authentication is enabled)
+
+You can source these from the installation:
+
+```bash
+source .env.testbed
 ```
 
-1. The client sends a "ping" message to the server.
-2. It then waits for a "pong" response, with a specified timeout.
+### Running Evaluation
 
-#### Server to Client (Pong):
+To run an evaluation:
 
-```python
-def process_message(self, message):
-    if message.type == "ping":
-        self.communicator.send_message(Message(type="pong", body={}))
-        logger.info("Sent pong response.")
-    # ... handle other message types
-``` 
-
-1. The server receives the "ping" message.
-2. It immediately responds with a "pong" message.
-
-This ping-pong mechanism allows the client to check if the server is responsive and the communication channel is working correctly.
-
-### ZeroMQ Communicator
-Both client and server use the same ZeroMQCommunicator class for sending and receiving messages:
-
-```python
-class ZeroMQCommunicator(Communicator):
-    def __init__(self, testbed_id: str, pub_address: str, sub_address: str):
-        # ... initialization code ...
-
-    def send_message(self, message_type: str, data: dict[str, Any]) -> None:
-        self.pub_socket.send_multipart([
-            self.testbed_id.encode(),
-            message_type.encode(),
-            json.dumps(data).encode()
-        ])
-
-    def receive_messages(self) -> Iterable[Message]:
-        messages = []
-        while self.sub_socket.poll(timeout=100):
-            testbed_id, message_type, data = self.sub_socket.recv_multipart()
-            if testbed_id.decode() == self.testbed_id:
-                messages.append(Message(
-                    message_type.decode(),
-                    json.loads(data.decode())
-                ))
-        return messages
+```bash
+python scripts/run_evaluation.py --instance-id <instance-id>
 ```
 
-This implementation allows for bidirectional communication:
-- The client's PUB socket connects to the server's SUB socket.
-- The server's PUB socket connects to the client's SUB socket.
+For example:
+```bash
+python scripts/run_evaluation.py --instance-id django__django-11333
+```
 
-By using the same ZeroMQCommunicator class for both client and server, we ensure consistent message formatting and handling. The testbed_id is used to filter messages, ensuring that each client only receives messages intended for it.
+The script will:
+1. Create a new testbed instance
+2. Run the evaluation using the specified instance ID with the gold patch
+3. Output the evaluation results in JSON format
+4. Clean up the testbed instance
 
-This approach demonstrates how the client and server can communicate effectively using ZeroMQ, with the ping-pong mechanism serving as a concrete example of the message exchange process.
+A successful run will show "✅ Evaluation completed successfully!" in the logs. Any errors during execution will be logged with detailed information.
+
+### Run tests
+
+```bash
+python scripts/run_tests.py --instance-id <instance-id>
+```
+
+For example:
+
+```bash
+python scripts/run_tests.py --instance-id django__django-11333
+```
+
+The script will:
+1. Create a new testbed instance
+2. Run the tests using the specified instance ID with the files specified in the instance's `test_patch`
+3. Output the test results in JSON format
+4. Clean up the testbed instance
+
+## Architecture
+
+The solution consists of three core components:
+
+### 1. Orchestrating API
+
+- Deployed as a central service in the Kubernetes cluster
+- Manages testbed jobs and pods lifecycle
+- Provides endpoints for command execution in testbeds
+- Handles pod creation and deletion
+
+### 2. Testbeds
+
+Testbeds are composed of two parts:
+- **Main Testbed Image**: Contains the test environment and code
+- **Sidecar Container**: Exposes a simple HTTP API with four endpoints:
+  - Command execution
+  - File management (save/retrieve)
+  - Status polling
+
+The command execution flow is straightforward:
+1. Send command via `POST /exec`
+2. Poll status via `GET /exec` until completion
+
+### 3. SDK
+
+The SDK provides a simple interface to interact with the API. It handles:
+- Testbed creation and management
+- Command execution
+- Test running and evaluation
+
+#### Test Execution Flow
+1. Start or reset testbed (recommended: new testbed for each test run)
+2. Apply code changes as git patches
+3. Run tests using specified commands
+4. Parse test output into TestResult objects
+5. Generate evaluation reports comparing against FAIL_TO_PASS and PASS_TO_PASS tests
