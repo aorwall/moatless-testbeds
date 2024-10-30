@@ -6,7 +6,7 @@ While initially tested with SWE-Bench's docker containerization solution, it sup
 - Contains a git repository in the `/testbeds` directory for applying patches
 - Supports running tests with specific commands (e.g., `pytest [path to test file]`)
 
-*Fill out [this form](https://forms.gle/t375zSfy9D88qDJG7) if you’re interested in testing the hosted version of Moatless Testbeds.*
+***Fill out [this form](https://forms.gle/t375zSfy9D88qDJG7) if you’re interested in testing the hosted version of Moatless Testbeds.***
 
 ## Getting Started
 
@@ -130,28 +130,6 @@ The script will:
 4. Clean up the testbed instance
 
 A successful run will show "✅ Evaluation completed successfully!" in the logs. Any errors during execution will be logged with detailed information.
-
-### Run tests
-
-```bash
-python scripts/run_tests.py --instance-id <instance-id> [--test-files test1.py test2.py ...]
-```
-
-For example:
-
-```bash
-# Run with test_patch files
-python scripts/run_tests.py --instance-id django__django-11333
-
-# Run specific test files
-python scripts/run_tests.py --instance-id django__django-11333 --test-files tests/test_forms.py tests/test_models.py
-```
-
-The script will:
-1. Create a new testbed instance
-2. Run the specified tests or fall back to the test_patch files if no tests are specified
-3. Output the test results in JSON format
-4. Clean up the testbed instance
 
 ## Architecture
 
