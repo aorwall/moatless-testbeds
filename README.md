@@ -12,15 +12,39 @@ While initially tested with SWE-Bench's docker containerization solution, it sup
 ```python
 from testbeds.sdk import TestbedSDK
 
+# Initialize the SDK with your credentials
 sdk = TestbedSDK(
-    base_url="https://testbeds.moatless.ai", # Replace with your API URL
+    base_url="https://testbeds.moatless.ai",  # Replace with your API URL
     api_key="<API-KEY>"
 )
 
-with sdk.create_client(instance_id="<INSTANCE-ID>") as testbed:
-    test_files = ["path/to/test_file.py"]
-    result = testbed.run_tests(test_files)
-    print(result.model_dump_json(indent=2))
+# Create a testbed instance and automatically handle cleanup
+with sdk.create_client(instance_id="django__django-11333") as testbed:
+    # Define test files to run
+    test_files = [
+        "tests/test_forms.py",
+        "tests/test_models.py"
+    ]
+
+    # Example patch fixing a bug
+    patch = """
+diff --git a/django/forms/models.py b/django/forms/models.py
+index abc123..def456 100644
+--- a/django/forms/models.py
++++ b/django/forms/models.py
+@@ -245,7 +245,7 @@ class BaseModelForm(BaseForm):
+-        if self.instance and not self.instance._state.adding:
++        if self.instance and not self.instance._state.adding and not self._meta.fields:
+             self._meta.fields = None
+    """
+
+    # Run the tests and get results
+    result = testbed.run_tests(
+        test_files=test_files,
+        patch=patch,
+        timeout=300  # Optional: Set custom timeout in seconds
+    )
+    print(f"Test Status: {result.get_summary()}")
 ```
 
 ## Installation

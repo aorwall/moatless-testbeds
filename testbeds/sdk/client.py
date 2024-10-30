@@ -100,6 +100,7 @@ class TestbedClient:
             "X-API-Key": self.api_key,
             "traceparent": self._generate_traceparent(),
         }
+
     def _request(
         self,
         method: str,
