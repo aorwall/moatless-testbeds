@@ -29,7 +29,7 @@ SOFTWARE.
 import logging
 import re
 
-from testbed.schema import TestResult, TestStatus, TraceItem
+from testbeds.schema import TestResult, TestStatus, TraceItem
 
 logger = logging.getLogger(__name__)
 

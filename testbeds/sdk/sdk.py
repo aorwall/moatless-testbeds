@@ -4,11 +4,11 @@ from typing import Optional, List
 
 import requests
 
-from testbed.schema import (
+from testbeds.schema import (
     TestbedSummary,
     TestbedDetailed,
 )
-from testbed.sdk.client import TestbedClient
+from testbeds.sdk.client import TestbedClient
 
 logger = logging.getLogger(__name__)
 

@@ -58,3 +58,4 @@ moatless_testbeds.egg-info
 test_logs
 .ipynb_checkpoints
 __pycache__
+.pypirc

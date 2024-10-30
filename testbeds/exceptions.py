@@ -1,0 +1,3 @@
+
+class TestbedNotFoundError(Exception):
+    pass

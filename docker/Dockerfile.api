@@ -7,9 +7,9 @@ COPY requirements.txt /app/
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY testbed /app/testbed/
+COPY testbeds /app/testbeds/
 
-COPY testbed/api/main.py /app/
+COPY testbeds/api/main.py /app/
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
 RUN mkdir -p /var/log && touch /var/log/testbed-api.log && chmod 666 /var/log/testbed-api.log

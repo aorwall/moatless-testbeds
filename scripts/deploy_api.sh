@@ -1,21 +1,14 @@
 #!/bin/bash
 
-DOCKER_IMAGE=${DOCKER_REGISTRY:-aorwall/moatless-testbed-api}
-NAMESPACE=${NAMESPACE:-default}
+export NAMESPACE=${KUBERNETES_NAMESPACE:-testbeds}
+export DOCKER_REGISTRY=${DOCKER_REGISTRY:-aorwall}
+export IMAGE_TAG=${IMAGE_TAG:-$(git rev-parse --short HEAD)}
 
-docker build -t ${DOCKER_IMAGE}:latest -f Dockerfile.api .
-docker push ${DOCKER_IMAGE}:latest
+echo "Deploying API to namespace: $NAMESPACE with image tag: $IMAGE_TAG"
 
-# Apply combined RBAC resources for API
-kubectl apply -f <(envsubst < infra/testbed-rbac.yaml)
+scripts/build_api.sh
 
-# Apply testbed sidecar service account and roles
-kubectl apply -f <(envsubst < infra/testbed-sa.yaml)
-kubectl apply -f <(envsubst < infra/testbed-role.yaml)
-kubectl apply -f <(envsubst < infra/testbed-rolebinding.yaml)
-
-kubectl apply -f <(envsubst < k8s/api-keys-secret.yaml)
 kubectl apply -f <(envsubst < k8s/api-deployment.yaml)
 kubectl apply -f <(envsubst < k8s/api-service.yaml)
 
-echo "Deployment completed in namespace: $NAMESPACE"
+echo "Deployment completed in namespace: $NAMESPACE with image tag: $IMAGE_TAG"

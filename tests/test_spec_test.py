@@ -1,10 +1,10 @@
 import pytest
 from unittest.mock import patch
 
-from testbed.swebench.constants import ResolvedStatus
-from testbed.swebench.test_spec import TestSpec
-from testbed.schema import SWEbenchInstance
-from testbed.swebench.utils import load_swebench_instance
+from testbeds.swebench.constants import ResolvedStatus
+from testbeds.swebench.test_spec import TestSpec
+from testbeds.schema import SWEbenchInstance
+from testbeds.swebench.utils import load_swebench_instance
 
 
 @pytest.fixture

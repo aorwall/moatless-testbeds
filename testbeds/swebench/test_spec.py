@@ -33,8 +33,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from testbed.schema import SWEbenchInstance, TestsStatus, EvalTestResult
-from testbed.swebench.constants import (
+from testbeds.schema import SWEbenchInstance, TestsStatus, EvalTestResult
+from testbeds.swebench.constants import (
     MAP_REPO_TO_INSTALL,
     MAP_REPO_VERSION_TO_SPECS,
     USE_X86,
@@ -46,8 +46,8 @@ from testbed.swebench.constants import (
     PASS_TO_PASS,
     RUN_TESTS,
 )
-from testbed.swebench.grading import get_eval_tests_report, get_resolution_status
-from testbed.swebench.log_parsers import parse_log
+from testbeds.swebench.grading import get_eval_tests_report, get_resolution_status
+from testbeds.swebench.log_parsers import parse_log
 
 DIFF_MODIFIED_FILE_REGEX = r"--- a/(.*)"
 

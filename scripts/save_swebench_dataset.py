@@ -6,8 +6,6 @@ from typing import cast
 
 from datasets import Dataset, load_dataset
 
-from testbed.swebench.utils import load_swebench_dataset
-from testbed.schema import SWEbenchInstance
 
 # Load the SWE-bench dataset
 name = "princeton-nlp/SWE-bench"

@@ -10,10 +10,10 @@ from opentelemetry import trace
 from opentelemetry.propagate import extract
 from opentelemetry.sdk.resources import Resource
 
-from testbed.schema import (
+from testbeds.schema import (
     RunCommandsRequest,
 )
-from testbed.testbed.kubernetes import KubernetesContainer
+from testbeds.testbed.kubernetes import KubernetesContainer
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s [%(levelname)s] %(message)s"

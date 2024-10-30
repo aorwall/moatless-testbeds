@@ -1,4 +1,4 @@
-from testbed.schema import TestResult, TestStatus, TestRunResponse
+from testbeds.schema import TestResult, TestStatus, TestRunResponse
 
 
 def test_deserialize_test_result():

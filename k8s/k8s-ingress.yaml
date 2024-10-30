@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  name: moatless-testbeds
+  namespace: testbed-dev
+spec:
+  ingressClassName: webapprouting.kubernetes.azure.com
+  rules:
+  - host: testbeds.moatless.ai
+    http:
+      paths:
+      - backend:
+          service:
+            name: testbed-api-service
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - testbeds.moatless.ai
+    secretName: moatless-testbeds-tls

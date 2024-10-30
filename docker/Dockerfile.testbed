@@ -6,7 +6,7 @@ COPY requirements.txt /app/
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY testbed /app/testbed/
+COPY testbeds /app/testbeds/
 
 COPY docker/entrypoint_testbed.sh /app/entrypoint.sh
 

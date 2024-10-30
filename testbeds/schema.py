@@ -3,7 +3,7 @@ from typing import Optional, Literal, Dict, List, Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from testbed.swebench.constants import ResolvedStatus
+from testbeds.swebench.constants import ResolvedStatus
 
 
 class SWEbenchInstance(BaseModel):

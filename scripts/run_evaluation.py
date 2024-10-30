@@ -7,7 +7,7 @@ import sys
 import argparse
 
 from dotenv import load_dotenv
-from testbed.sdk import TestbedSDK
+from testbeds.sdk import TestbedSDK
 
 logging.basicConfig(
     level=logging.INFO, 
@@ -16,24 +16,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_evaluation(instance_id="django__django-11133"):
-    namespace = os.getenv("NAMESPACE")
-    ip = os.getenv("TESTBED_API_IP")
-    api_key = os.getenv("TESTBED_API_KEY")
-
-    if not all([namespace, ip, api_key]):
-        logger.error("Missing required environment variables")
+def run_evaluation(instance_id: str):    
+    if not os.getenv("TESTBED_HOSTNAME"):
+        logger.error("TESTBED_HOSTNAME is not set")
         return False
+    
+    if not os.getenv("TESTBED_API_KEY"):
+        logger.error("TESTBED_API_KEY is not set")
+        return False
+
+    hostname = os.getenv("TESTBED_HOSTNAME")
+    api_key = os.getenv("TESTBED_API_KEY")
 
     logger.info(f"Starting evaluation for instance: {instance_id}")
 
     try:
         sdk = TestbedSDK(
-            base_url=f"http://{ip}",
+            base_url=hostname,
             api_key=api_key
         )
 
-        logger.info("Creating evaluation instance...")
+        logger.info("Creating testbed instance...")
         testbed = sdk.create_client(instance_id=instance_id)
         logger.info(f"Created Testbed ID: {testbed.testbed_id}")
 
@@ -43,7 +46,7 @@ def run_evaluation(instance_id="django__django-11133"):
         logger.info("Running evaluation script...")
         result = testbed.run_evaluation()
 
-        logger.info("Cleaning up evaluation instance...")
+        logger.info("Cleaning up testbed instance...")
         sdk.delete_testbed(testbed_id=testbed.testbed_id)
 
         if result.resolved:
@@ -62,7 +65,7 @@ def run_evaluation(instance_id="django__django-11133"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run evaluation on Testbed API')
     parser.add_argument('--instance-id', type=str,
-                        help='Instance ID to use for evaluation (default: django__django-11133)')
+                        help='Instance ID to use for evaluation (e.g., django__django-11133)')
     
     args = parser.parse_args()
     success = run_evaluation(args.instance_id)

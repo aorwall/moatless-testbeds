@@ -1,7 +1,7 @@
 import json
 import pytest
 from unittest.mock import patch, MagicMock
-from testbed.api.main import create_app
+from testbeds.api.main import create_app
 import os
 
 

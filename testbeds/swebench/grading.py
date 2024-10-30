@@ -28,8 +28,8 @@ SOFTWARE.
 
 from typing import Any
 
-from testbed.schema import TestResult, TestStatus
-from testbed.swebench.constants import FAIL_TO_PASS, PASS_TO_PASS, ResolvedStatus
+from testbeds.schema import TestResult, TestStatus
+from testbeds.swebench.constants import FAIL_TO_PASS, PASS_TO_PASS, ResolvedStatus
 
 IGNORE_TESTS = ["[100%]", "[", "[100%]------------------------------"]
 

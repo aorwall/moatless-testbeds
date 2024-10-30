@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "moatless-testbeds"
+version = "0.0.2"
+description = "Run testbeds as isolated pods in a Kubernetes cluster"
+authors = ["Albert Örwall <albert@moatless.ai>"]
+readme = "README.md"
+packages = [{include = "testbeds"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+requests = "^2.32.3"
+pydantic = "^2.8.2"
+datasets = "^3.0.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

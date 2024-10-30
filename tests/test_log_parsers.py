@@ -1,5 +1,5 @@
-from testbed.schema import TestStatus, TraceItem
-from testbed.swebench.log_parsers import parse_log
+from testbeds.schema import TestStatus, TraceItem
+from testbeds.swebench.log_parsers import parse_log
 
 
 def test_django_1():

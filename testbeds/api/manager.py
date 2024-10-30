@@ -11,16 +11,17 @@ import yaml
 from jinja2 import Environment, FileSystemLoader
 from kubernetes import client, config
 
-from testbed.api.client import TestbedClient
-from testbed.schema import (
+from testbeds.api.client import TestbedClient
+from testbeds.exceptions import TestbedNotFoundError
+from testbeds.schema import (
     TestbedStatusDetailed,
     ContainerStatus,
     TestbedSummary,
     TestbedDetailed,
     SWEbenchInstance,
 )
-from testbed.swebench.test_spec import TestSpec
-from testbed.swebench.utils import load_swebench_instance
+from testbeds.swebench.test_spec import TestSpec
+from testbeds.swebench.utils import load_swebench_instance
 
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "testbeds")
 
@@ -179,26 +180,29 @@ class TestbedManager:
             )
             logger.info(f"Created job for {testbed_id}")
 
-            service_manifest = self._create_service_manifest(
-                testbed_id, user_id, run_id, instance_id
-            )
-            self.core_v1.create_namespaced_service(
-                body=service_manifest, namespace=self.namespace
-            )
-            logger.info(f"Created service for {testbed_id}")
+            # Only create service if not in cluster
+            if not self.in_cluster:
+                service_manifest = self._create_service_manifest(
+                    testbed_id, user_id, run_id, instance_id
+                )
+                self.core_v1.create_namespaced_service(
+                    body=service_manifest, namespace=self.namespace
+                )
+                logger.info(f"Created service for {testbed_id}")
 
-            # Wait for job and service to be created
+            # Wait for job and optionally service to be created
             while True:
                 if time.time() - start_time > timeout:
-                    raise TimeoutError(
-                        f"Creation of job or service {testbed_id} timed out"
-                    )
+                    raise TimeoutError(f"Creation of job or service {testbed_id} timed out")
 
                 job = self._get_job(testbed_id)
-                service = self._get_service(testbed_id)
-
-                if job and service:
-                    break
+                if not self.in_cluster:
+                    service = self._get_service(testbed_id)
+                    if job and service:
+                        break
+                else:
+                    if job:
+                        break
 
                 time.sleep(0.1)
 
@@ -245,23 +249,32 @@ class TestbedManager:
             f"create_client(testbed_id: {testbed_id}, user_id: {user_id}, timeout: {timeout}, run_id: {run_id})"
         )
         job = self._get_job(testbed_id)
-        service = self._get_service(testbed_id)
+        # Only check service if not in cluster
+        service = None if self.in_cluster else self._get_service(testbed_id)
 
-        if (
-            not job
-            or not service
-            or job.metadata.labels.get("user-id") != user_id
-            or job.metadata.labels.get("run-id") != run_id
-        ):
+        if not job or job.metadata.labels.get("user-id") != user_id or job.metadata.labels.get("run-id") != run_id:
             logger.warning(
-                f"Testbed {testbed_id} not found or not owned by user {user_id} with run_id {run_id}, or service is missing. Deleting and recreating."
+                f"Testbed {testbed_id} not found or not owned by user {user_id} with run_id {run_id}"
             )
             raise TestbedNotFoundError(f"Testbed {testbed_id} not found")
+
+        # Also check service exists if not in cluster
+        if not self.in_cluster and not service:
+            logger.warning(f"Service for testbed {testbed_id} not found")
+            raise TestbedNotFoundError(f"Service for testbed {testbed_id} not found")
 
         instance_id = job.metadata.labels.get("instance-id")
 
         if self.in_cluster:
-            base_url = f"http://{testbed_id}.{self.namespace}.svc.cluster.local:8000"
+            # Get pod IP directly when in cluster
+            pod_list = self.core_v1.list_namespaced_pod(
+                namespace=self.namespace, 
+                label_selector=f"job-name={testbed_id}"
+            )
+            if not pod_list.items:
+                raise TestbedNotFoundError(f"Pod for testbed {testbed_id} not found")
+            pod_ip = pod_list.items[0].status.pod_ip
+            base_url = f"http://{pod_ip}:8000"
         else:
             base_url = f"http://{self._get_service_external_ip(testbed_id)}:8000"
 
@@ -288,24 +301,23 @@ class TestbedManager:
                 )
                 return
 
-            try:
-                # Check if service exists before deleting
-                service = self._get_service(testbed_id)
-                if service:
-                    self.core_v1.delete_namespaced_service(
-                        name=testbed_id,
-                        namespace=self.namespace,
-                        body=client.V1DeleteOptions(
-                            propagation_policy="Foreground", grace_period_seconds=0
-                        ),
-                    )
-                    logger.info(f"Deleted service for {testbed_id}")
-                else:
-                    logger.info(
-                        f"Service for {testbed_id} not found, skipping deletion"
-                    )
-            except Exception as e:
-                logger.error(f"Failed to delete service {testbed_id}: {str(e)}")
+            # Only try to delete service if not in cluster
+            if not self.in_cluster:
+                try:
+                    service = self._get_service(testbed_id)
+                    if service:
+                        self.core_v1.delete_namespaced_service(
+                            name=testbed_id,
+                            namespace=self.namespace,
+                            body=client.V1DeleteOptions(
+                                propagation_policy="Foreground", grace_period_seconds=0
+                            ),
+                        )
+                        logger.info(f"Deleted service for {testbed_id}")
+                    else:
+                        logger.info(f"Service for {testbed_id} not found, skipping deletion")
+                except Exception as e:
+                    logger.error(f"Failed to delete service {testbed_id}: {str(e)}")
 
             try:
                 # Delete the job
@@ -439,17 +451,20 @@ class TestbedManager:
         else:
             logger.warning(f"Pod not found for job {job_name}. Pod list: {pod_list}")
 
-        service_status = self._get_service_status(job_name)
-
-        if pod_status == "Running" and service_status == "Running":
-            return "Running"
-        elif pod_status == "Pending" or service_status == "Pending":
-            return "Pending"
+        # Only check service status if not in cluster
+        if self.in_cluster:
+            return pod_status
         else:
-            logger.warning(
-                f"Testbed {job_name} is Unknown: Pod status: {pod_status}, Service status: {service_status}"
-            )
-            return "Unknown"
+            service_status = self._get_service_status(job_name)
+            if pod_status == "Running" and service_status == "Running":
+                return "Running"
+            elif pod_status == "Pending" or service_status == "Pending":
+                return "Pending"
+            else:
+                logger.warning(
+                    f"Testbed {job_name} is Unknown: Pod status: {pod_status}, Service status: {service_status}"
+                )
+                return "Unknown"
 
     def _read_testbed_status_detailed(
         self, job_name: str
@@ -474,14 +489,14 @@ class TestbedManager:
                     elif container.name == "sidecar":
                         sidecar_status = status
 
-            # Get service status
-            service_status = self._get_service_status(job_name)
+            # Only get service status if not in cluster
+            service_status = "NotRequired" if self.in_cluster else self._get_service_status(job_name)
 
             return TestbedStatusDetailed(
                 pod_phase=pod.status.phase if pod.status else "Unknown",
                 testbed=testbed_status,
                 sidecar=sidecar_status,
-                service=service_status,  # Add service status here
+                service=service_status,
             )
         else:
             logger.warning(f"Pod not found for job {job_name}")

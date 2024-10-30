@@ -4,20 +4,20 @@ import os
 import time
 import uuid
 from time import sleep
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 import requests
 from requests.exceptions import RequestException, HTTPError, Timeout, ConnectionError
 
-from testbed.schema import (
+from testbeds.schema import (
     EvaluationResult,
     CommandExecutionResponse,
     TestRunResponse,
 )
-from testbed.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL, RUN_TESTS
-from testbed.swebench.log_parsers import parse_log
-from testbed.swebench.test_spec import TestSpec
-from testbed.swebench.utils import load_swebench_instance
+from testbeds.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL, RUN_TESTS
+from testbeds.swebench.log_parsers import parse_log
+from testbeds.swebench.test_spec import TestSpec
+from testbeds.swebench.utils import load_swebench_instance
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +66,12 @@ class TestbedClient:
         self.current_span_id = None
 
     def check_health(self, timeout: int = 30):
+        """Check testbed health status."""
         try:
-            data = self._request("GET", "health")
-            return data.get("status") == "OK"
+            response = self._request("GET", "health")
+            return response.get("status") == "OK"
         except requests.RequestException as e:
-            logger.error(f"Error during ping: {str(e)}")
+            logger.error(f"Health check failed: {str(e)}")
             return False
 
     def _generate_traceparent(self):
@@ -144,17 +145,21 @@ class TestbedClient:
         raise Exception(f"Unexpected error: Max retries reached for {url}")
 
     def wait_until_ready(self, timeout: float = 600):
+        """Wait until testbed is healthy and ready."""
         start_time = time.time()
         while time.time() - start_time < timeout:
-            response = self._request("GET", "status")
-            if response.get("status") == "NotFound":
-                raise Exception(f"Testbed {self.testbed_id} not found")
-            if response.get("status") == "Running":
-                return True
-            time.sleep(1)
-        raise TimeoutError(
-            f"Testbed {self.testbed_id} not ready within {timeout} seconds"
-        )
+            try:
+                if self.check_health():
+                    logger.debug(f"Testbed {self.testbed_id} is healthy and ready")
+                    return True
+                
+                logger.debug(f"Testbed {self.testbed_id} not ready yet, waiting...")
+                time.sleep(1)
+            except Exception as e:
+                logger.warning(f"Health check failed: {str(e)}, retrying...")
+                time.sleep(1)
+                
+        raise TimeoutError(f"Testbed {self.testbed_id} not ready within {timeout} seconds")
 
     def status(self):
         return self._request("GET", "status")
@@ -313,55 +318,16 @@ class TestbedClient:
         finally:
             self.current_span_id = None
 
-    def reset_testbed(self):
+    def execute(self, commands: List[str] | str):
+        if isinstance(commands, str):
+            commands = [commands]
+
         try:
-            response = self._request(
-                "POST",
-                "reset",
-                json={"instance_id": self.instance.instance_id, "run_id": self.run_id},
-            )
-            logger.info(f"Reset testbed {self.testbed_id}: {response}")
-            if not response.get("success", False):
-                raise Exception("Failed to reset testbed")
-            return response
+            response = self._request("POST", "exec", json={"commands": commands})
+            return CommandExecutionResponse.model_validate(response)
         except requests.RequestException as e:
-            logger.error(f"Error during reset: {str(e)}")
+            logger.error(f"Error during execute: {str(e)}")
             raise e
-
-    def reset(self):
-        self.run_tests()
-        diff = self.get_diff()
-        logger.debug(f"Diff after patch: \n{diff}")
-        return diff
-
-    def save_file(self, file_path: str, content: str):
-        try:
-            encoded_content = base64.b64encode(content.encode()).decode()
-            data = {"file_path": file_path, "content": encoded_content}
-            logger.debug(f"Saving file: {file_path}")
-            response = self._request("POST", "file", json=data)
-            return response
-        except requests.RequestException as e:
-            logger.error(f"Error saving file {file_path}: {str(e)}")
-            raise e
-        finally:
-            if self.log_dir:
-                datetime_str = time.strftime("%Y%m%d-%H%M%S")
-                with open(f"{self.log_dir}/{datetime_str}_save_file.log", "a") as f:
-                    f.write(f"File path: {file_path}\n")
-                    f.write(f"Content:\n{content}\n")
-
-    def get_file(self, file_path: str):
-        try:
-            params = {"file_path": file_path}
-            response = self._request("GET", "file", params=params)
-            if "content" in response:
-                return base64.b64decode(response["content"]).decode()
-            else:
-                return response
-        except requests.RequestException as e:
-            logger.error(f"Error getting file: {str(e)}")
-            return {"error": str(e)}
 
     def destroy(self):
         self._request("DELETE")

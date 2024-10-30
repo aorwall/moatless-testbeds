@@ -1,15 +1,16 @@
 # Moatless Testbeds
-Moatless Testbeds enables you to run testbeds as isolated pods in a Kubernetes cluster, orchestrated through a central API.
+Moatless Testbeds allows you to create isolated testbed environments in a Kubernetes cluster where you can apply code changes through git patches and run tests or SWE-Bench evaluations. 
 
 While initially tested with SWE-Bench's docker containerization solution, it supports any Docker image that meets the basic requirements:
 
 - Contains a git repository in the `/testbeds` directory for applying patches
 - Supports running tests with specific commands (e.g., `pytest [path to test file]`)
 
+
 #### Usage Example
 
 ```python
-from moatless_testbeds import TestbedSDK
+from testbeds.sdk import TestbedSDK
 
 sdk = TestbedSDK(
     base_url="http://<API-IP>",
@@ -43,12 +44,18 @@ git clone https://github.com/aorwall/moatless-testbeds.git
 cd moatless-testbeds
 
 # Install Testbeds SDK
-pip install -e .
+pip install moatless-testbeds
+
+# Set the Kubernetes namespace if not default
+# export KUBERNETES_NAMESPACE=testbeds  # default: testbeds
 
 # Optional: Set environment variables only if using custom images
 # If not set, will use default public images
-# export KUBERNETES_NAMESPACE=testbeds  # default: testbeds
 # export DOCKER_REGISTRY=your-registry  # default: aorwall
+
+# Optional: Enable direct command execution in testbeds
+# Warning: This allows arbitrary command execution and should be used with caution
+# export ENABLE_EXEC=true  # default: false
 
 # Run the install script
 ./scripts/install.sh
@@ -97,18 +104,22 @@ A successful run will show "✅ Evaluation completed successfully!" in the logs.
 ### Run tests
 
 ```bash
-python scripts/run_tests.py --instance-id <instance-id>
+python scripts/run_tests.py --instance-id <instance-id> [--test-files test1.py test2.py ...]
 ```
 
 For example:
 
 ```bash
+# Run with test_patch files
 python scripts/run_tests.py --instance-id django__django-11333
+
+# Run specific test files
+python scripts/run_tests.py --instance-id django__django-11333 --test-files tests/test_forms.py tests/test_models.py
 ```
 
 The script will:
 1. Create a new testbed instance
-2. Run the tests using the specified instance ID with the files specified in the instance's `test_patch`
+2. Run the specified tests or fall back to the test_patch files if no tests are specified
 3. Output the test results in JSON format
 4. Clean up the testbed instance
 

@@ -1,5 +1,8 @@
 DOCKER_REGISTRY=${DOCKER_REGISTRY:-aorwall}
-API_DOCKER_IMAGE=${DOCKER_REGISTRY}/moatless-testbed-api:latest
+IMAGE_TAG=${IMAGE_TAG:-latest}
+API_DOCKER_IMAGE=${DOCKER_REGISTRY}/moatless-testbed-api:${IMAGE_TAG}
+
+echo "Building API Docker image: ${API_DOCKER_IMAGE}"
 
 set -e
 

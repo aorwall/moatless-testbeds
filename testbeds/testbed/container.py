@@ -2,7 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections import namedtuple
 
-from testbed.schema import CommandExecutionResponse
+from testbeds.schema import CommandExecutionResponse
 
 logger = logging.getLogger(__name__)
 

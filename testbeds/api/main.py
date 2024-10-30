@@ -6,10 +6,10 @@ from functools import wraps
 
 from flask import Flask, request, jsonify
 from opentelemetry.sdk.trace import TracerProvider
-from testbed.exception import TestbedNotFoundError
 from werkzeug.exceptions import HTTPException
 
-from testbed.api.manager import TestbedManager
+from testbeds.api.manager import TestbedManager
+from testbeds.exceptions import TestbedNotFoundError
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -63,6 +63,7 @@ def create_app():
     app = Flask(__name__)
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # Disable caching
     app.config["PROPAGATE_EXCEPTIONS"] = True
+    app.config["ENABLE_EXEC"] = os.environ.get("ENABLE_EXEC", "false").lower() == "true"
 
     configure_opentelemetry(app)
 
@@ -81,7 +82,8 @@ def create_app():
             user_id = api_keys.get(api_key)
             if not user_id:
                 logger.warning(
-                    f"Unauthorized access attempt - Invalid API key: {api_key if api_key else 'No key provided'}"
+                    f"Unauthorized access attempt - Invalid API key: {api_key if api_key else 'No key provided'} "
+                    f"for endpoint: {request.path} [{request.method}]"
                 )
                 return jsonify({"error": "Invalid API key"}), 401
             return f(user_id=user_id, *args, **kwargs)
@@ -143,8 +145,6 @@ def create_app():
         data = request.json
         patch = data.get("patch")
         client = get_testbed_client(testbed_id, user_id)
-        if not client:
-            return jsonify({"error": "Testbed not found"}), 400
         client.apply_patch(patch)
         return jsonify({"message": "Patch applied"}), 200
 
@@ -158,10 +158,8 @@ def create_app():
         logger.debug(
             f"run_tests(testbed_id={testbed_id}, user_id={user_id}, instance_id={instance_id})"
         )
-        client = get_testbed_client(testbed_id, user_id)
-        if not client:
-            return jsonify({"error": "Testbed not found"}), 400
 
+        client = get_testbed_client(testbed_id, user_id)
         result = client.run_tests(test_files)
         return jsonify(result.model_dump()), 200
 
@@ -176,34 +174,50 @@ def create_app():
         result = client.run_evaluation()
         return jsonify(result.model_dump()), 200
 
+    @app.route("/testbeds/<testbed_id>/diff", methods=["GET"])
+    @validate_api_key
+    def get_diff(testbed_id: str, user_id: str):
+        logger.debug(f"get_diff(testbed_id={testbed_id}, user_id={user_id})")
+
+        client = get_testbed_client(testbed_id, user_id)
+        diff = client.get_diff()
+        return jsonify({"diff": diff}), 200
+
     @app.route("/testbeds/<testbed_id>/status", methods=["GET"])
     @validate_api_key
     def get_testbed_status(testbed_id: str, user_id: str):
-        try:
-            logger.info(f"get_testbed_status(testbed_id={testbed_id}, user_id={user_id})")
-            status = testbed_manager.get_testbed_status(
-                testbed_id, user_id
-            )
-            if not status:
-                return jsonify(
-                    {"error": "Testbed not found or unable to read status"}
-                ), 404
+        logger.info(f"get_testbed_status(testbed_id={testbed_id}, user_id={user_id})")
+        status = testbed_manager.get_testbed_status(
+            testbed_id, user_id
+        )
+        if not status:
+            return jsonify(
+                {"error": "Testbed not found or unable to read status"}
+            ), 404
 
-            return jsonify(status), 200
-        except Exception as e:
-            logger.exception(f"Error getting testbed status for {testbed_id}")
-            return jsonify({"error": str(e)}), 500
+        return jsonify(status), 200
+
+    @app.route("/testbeds/<testbed_id>/exec", methods=["POST"])
+    @validate_api_key
+    def execute_commands(testbed_id: str, user_id: str):
+        if not app.config["ENABLE_EXEC"]:
+            return jsonify({"error": "Command execution is disabled"}), 403
+
+        data = request.json
+        commands = data.get("commands")
+        if not commands or not isinstance(commands, list):
+            return jsonify({"error": "Missing or invalid commands parameter"}), 400
+
+        client = get_testbed_client(testbed_id, user_id)
+        result = client.execute_async(commands)
+        return jsonify(result.model_dump()), 200
 
     @app.route("/testbeds/<testbed_id>/exec", methods=["GET"])
     @validate_api_key
     def get_command_status(testbed_id: str, user_id: str):
-        try:
-            client = get_testbed_client(testbed_id, user_id)
-            result = client.get_execution_status()
-            return jsonify(result.model_dump()), 200
-        except Exception as e:
-            logger.exception(f"get_command_status() Error getting command status")
-            return jsonify({"error": str(e)}), 500
+        client = get_testbed_client(testbed_id, user_id)
+        result = client.get_execution_status()
+        return jsonify(result.model_dump()), 200
 
     @app.route("/testbeds", methods=["DELETE"])
     @validate_api_key
@@ -219,27 +233,10 @@ def create_app():
     @app.route("/cleanup", methods=["POST"])
     @validate_api_key
     def cleanup_user_resources(user_id: str):
-        try:
-            logger.info(f"cleanup_user_resources(user_id={user_id})")
-            deleted_count = testbed_manager.cleanup_user_resources(user_id)
-            logger.info(f"Cleaned up {deleted_count} resources for user {user_id}")
-            return jsonify({"message": f"Cleaned up {deleted_count} resources"}), 200
-        except Exception as e:
-            logger.exception(f"Error during cleanup for user {user_id}")
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/testbeds/<testbed_id>/diff", methods=["GET"])
-    @validate_api_key
-    def get_diff(testbed_id: str, user_id: str):
-        try:
-            client = get_testbed_client(testbed_id, user_id)
-            if not client:
-                return jsonify({"error": "Testbed not found"}), 400
-            diff = client.get_diff()
-            return jsonify({"diff": diff}), 200
-        except Exception as e:
-            logger.exception(f"Error getting git diff for testbed {testbed_id}")
-            return jsonify({"error": str(e)}), 500
+        logger.info(f"cleanup_user_resources(user_id={user_id})")
+        deleted_count = testbed_manager.cleanup_user_resources(user_id)
+        logger.info(f"Cleaned up {deleted_count} resources for user {user_id}")
+        return jsonify({"message": f"Cleaned up {deleted_count} resources"}), 200
 
     @app.errorhandler(TestbedNotFoundError)
     def handle_testbed_not_found(e):
@@ -257,20 +254,28 @@ def create_app():
 
     @app.errorhandler(Exception)
     def handle_exception(e):
+        reference_code = str(uuid.uuid4())
         if isinstance(e, HTTPException):
-            error_id = str(uuid.uuid4())
+            logger.exception(f"An http error occurred. Reference code: {reference_code}")
             return jsonify({
-                "error_id": error_id,
+                "reference_code": reference_code,
                 "code": e.code,
-                "name": e.name,
+                "error": e.name,
                 "description": e.description
             }), e.code
-        
-        # Handle non-HTTP exceptions
-        reference_code = str(uuid.uuid4())
 
+        reference_code = str(uuid.uuid4())
         logger.exception(f"An unexpected error occurred. Reference code: {reference_code}")
         return jsonify({"error": "An unexpected error occurred", "reference_code": reference_code}), 500
+
+    @app.route("/testbeds/<testbed_id>/health", methods=["GET"])
+    @validate_api_key
+    def check_testbed_health(testbed_id: str, user_id: str):
+        logger.debug(f"check_testbed_health(testbed_id={testbed_id}, user_id={user_id})")
+        client = get_testbed_client(testbed_id, user_id)
+        health_status = client.check_health()
+        
+        return jsonify(health_status), 200 if health_status["status"] == "OK" else 503
 
     return app
 

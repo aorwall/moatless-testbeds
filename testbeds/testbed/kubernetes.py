@@ -11,10 +11,10 @@ from kubernetes.client import ApiException
 from kubernetes.stream import stream
 from opentelemetry import trace
 
-from testbed.schema import (
+from testbeds.schema import (
     CommandExecutionResponse,
 )
-from testbed.testbed.container import Container
+from testbeds.testbed.container import Container
 
 logger = logging.getLogger(__name__)
 

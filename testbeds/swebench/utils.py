@@ -35,8 +35,8 @@ from typing import cast, Optional
 
 from datasets import Dataset, load_dataset
 
-from testbed.schema import SWEbenchInstance
-from testbed.swebench.constants import (
+from testbeds.schema import SWEbenchInstance
+from testbeds.swebench.constants import (
     NON_TEST_EXTS,
 )
 

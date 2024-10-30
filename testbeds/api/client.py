@@ -9,14 +9,14 @@ from typing import Optional
 import requests
 from kubernetes import client
 
-from testbed.schema import (
+from testbeds.schema import (
     RunCommandsRequest,
     CommandExecutionResponse,
     CommandExecutionSummary,
     TestbedDetailed, TestbedStatusDetailed, ContainerStatus, )
-from testbed.swebench.constants import APPLY_PATCH_FAIL
-from testbed.swebench.test_spec import TestSpec
-from testbed.swebench.utils import load_swebench_instance
+from testbeds.swebench.constants import APPLY_PATCH_FAIL
+from testbeds.swebench.test_spec import TestSpec
+from testbeds.swebench.utils import load_swebench_instance
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +77,10 @@ class TestbedClient:
     def base_url(self) -> str | None:
         return self._base_url
 
-    def check_health(self, timeout: int = 30):
-        try:
-            response = requests.get(f"{self.base_url}/health", timeout=timeout)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("status") == "OK"
-        except requests.RequestException as e:
-            logger.error(f"Error during ping: {str(e)}")
-            return False
+    def check_health(self, timeout: int = 30) -> bool:
+        response = requests.get(f"{self.base_url}/health", timeout=timeout)
+        response.raise_for_status()
+        return response.json()
 
     def get_testbed(self) -> Optional[TestbedDetailed]:
         job = self._get_job()
@@ -207,7 +202,6 @@ class TestbedClient:
     ) -> CommandExecutionResponse:
         logger.debug(f"Executing commands: {commands}")
         response = self._execute_command(commands, timeout)
-        logger.info(f"Execution status: {response}")
 
         while response.status == "running":
             response = self.get_execution_status()
@@ -263,6 +257,10 @@ class TestbedClient:
         return diff
 
     def apply_patch(self, patch: str) -> str:
+        if not patch:
+            logger.warning(f"apply_patch() No patch provided to apply on testbed {self.testbed_id}")
+
+        logger.info(f"Applying patch to testbed {self.testbed_id}")
         test_spec = self._get_test_spec()
 
         patch_filepath = f"/shared/patch.diff"
@@ -273,7 +271,7 @@ class TestbedClient:
 
         if APPLY_PATCH_FAIL in response.output:
             logger.error(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.output}")
-            raise RuntimeError(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.output}")
+            raise Exception(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.output}")
 
         diff = self.get_diff()
         logger.debug(f"Diff after patch: \n{diff}")
