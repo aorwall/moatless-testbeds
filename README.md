@@ -6,8 +6,16 @@ While initially tested with SWE-Bench's docker containerization solution, it sup
 - Contains a git repository in the `/testbeds` directory for applying patches
 - Supports running tests with specific commands (e.g., `pytest [path to test file]`)
 
+*Fill out [this form](https://forms.gle/t375zSfy9D88qDJG7) if you’re interested in testing the hosted version of Moatless Testbeds.*
 
-#### Usage Example
+## Getting Started
+
+### Initialize the SDK
+```bash
+pip install moatless-testbeds
+```
+
+### Run tests
 
 ```python
 from testbeds.sdk import TestbedSDK
@@ -46,6 +54,7 @@ index abc123..def456 100644
     )
     print(f"Test Status: {result.get_summary()}")
 ```
+
 
 ## Installation
 
