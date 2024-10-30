@@ -6,7 +6,7 @@ import requests
 
 from testbeds.schema import (
     TestbedSummary,
-    TestbedDetailed,
+    TestbedDetailed, SWEbenchInstance,
 )
 from testbeds.sdk.client import TestbedClient
 
@@ -42,11 +42,22 @@ class TestbedSDK:
         response = self._make_request("POST", "testbeds", json=data)
         return TestbedSummary(**response.json())
 
-    def create_client(self, instance_id: str, run_id: str = "default") -> TestbedClient:
+    def create_client(self,
+                      instance_id: str | None = None,
+                      instance: dict | SWEbenchInstance | None = None,
+                      run_id: str = "default") -> TestbedClient:
+        if not instance_id and not instance:
+            raise ValueError("Either instance_id or instance must be provided")
+
+        if instance and isinstance(instance, dict):
+            instance = SWEbenchInstance.model_validate(instance)
+
+        instance_id = instance_id or instance.instance_id
         testbed = self.get_or_create_testbed(instance_id, run_id)
         return TestbedClient(
             testbed.testbed_id,
-            instance_id,
+            instance_id=instance_id,
+            instance=instance,
             run_id=run_id,
             base_url=self.base_url,
             api_key=self.api_key,

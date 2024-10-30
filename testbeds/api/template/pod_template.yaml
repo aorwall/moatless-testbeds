@@ -102,6 +102,11 @@ spec:
           value: "{{ instance_id }}"
         - name: TESTBED_ID
           value: "{{ testbed_id }}"
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: testbed-secrets
+              key: AZURE_APPLICATIONINSIGHTS_CONNECTION_STRING
       nodeSelector:
         node-purpose: testbed
       restartPolicy: OnFailure

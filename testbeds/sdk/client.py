@@ -12,7 +12,7 @@ from requests.exceptions import RequestException, HTTPError, Timeout, Connection
 from testbeds.schema import (
     EvaluationResult,
     CommandExecutionResponse,
-    TestRunResponse,
+    TestRunResponse, SWEbenchInstance,
 )
 from testbeds.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL, RUN_TESTS
 from testbeds.swebench.log_parsers import parse_log
@@ -26,7 +26,8 @@ class TestbedClient:
     def __init__(
         self,
         testbed_id: str,
-        instance_id: str,
+        instance_id: str | None = None,
+        instance: SWEbenchInstance | None = None,
         run_id: str = "default",
         base_url: str | None = None,
         api_key: str | None = None,
@@ -34,7 +35,9 @@ class TestbedClient:
         ignored_tests: dict[str, list[str]] = {},
     ):
         assert testbed_id, "Testbed ID is required"
-        assert instance_id, "SWE-bench instance is required"
+
+        if not instance_id and not instance:
+            raise ValueError("Either instance_id or instance must be set")
 
         base_url = base_url or os.getenv("TESTBED_BASE_URL")
         api_key = api_key or os.getenv("TESTBED_API_KEY")
@@ -48,7 +51,11 @@ class TestbedClient:
         self.headers = {"X-API-Key": api_key}
         self.api_key = api_key
 
-        self.instance = load_swebench_instance(instance_id)
+        if not instance:
+            self.instance = load_swebench_instance(instance_id)
+        else:
+            self.instance = instance
+
         self.test_spec = TestSpec.from_instance(self.instance)
 
         self.testbed_id = testbed_id
@@ -65,18 +72,34 @@ class TestbedClient:
         self.trace_id = uuid.uuid4().hex[:32]
         self.current_span_id = None
 
+    def __enter__(self):
+        self.wait_until_ready()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.destroy()
+
     def check_health(self, timeout: int = 30):
         """Check testbed health status."""
-        try:
-            response = self._request("GET", "health")
-            return response.get("status") == "OK"
-        except requests.RequestException as e:
-            logger.error(f"Health check failed: {str(e)}")
+        url = f"{self.base_url}/testbeds/{self.testbed_id}/health"
+        headers = self._generate_headers()
+
+        response = requests.get(url, headers=headers, timeout=timeout)
+        if response.status_code == 200:
+            return response.json().get("status") == "OK"
+        elif response.status_code == 503:
             return False
+        else:
+            raise Exception(f"Unexpected status code {response.status_code}. Response: {response.text}")
 
     def _generate_traceparent(self):
         return f"00-{self.trace_id}-{self.current_span_id or uuid.uuid4().hex[:16]}-01"
 
+    def _generate_headers(self):
+        return {
+            "X-API-Key": self.api_key,
+            "traceparent": self._generate_traceparent(),
+        }
     def _request(
         self,
         method: str,
@@ -91,10 +114,7 @@ class TestbedClient:
         if endpoint:
             url += f"/{endpoint}"
 
-        headers = {
-            "X-API-Key": self.api_key,
-            "traceparent": self._generate_traceparent(),
-        }
+        headers = self._generate_headers()
 
         retries = 0
         retry_delay = initial_retry_delay
@@ -155,6 +175,13 @@ class TestbedClient:
                 
                 logger.debug(f"Testbed {self.testbed_id} not ready yet, waiting...")
                 time.sleep(1)
+            except RequestException as e:
+                if e.response.status_code == 503:
+                    logger.warning(f"Testbed {self.testbed_id} not ready yet, waiting...  {str(e)} {e.response.text}")
+                    time.sleep(1)
+                else:
+                    logger.error(f"Health check failed. {str(e)} {e.response.text}")
+                    raise e
             except Exception as e:
                 logger.warning(f"Health check failed: {str(e)}, retrying...")
                 time.sleep(1)

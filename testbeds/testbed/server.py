@@ -57,6 +57,8 @@ def configure_opentelemetry(app):
             logger.error("Failed to import Azure Monitor instrumentation")
             return
 
+        logger.info("Configuring OpenTelemetry with Azure Monitor")
+
         resource = Resource.create(
             attributes={
                 "service.instance.id": os.environ.get("POD_NAME"),

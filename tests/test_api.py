@@ -40,7 +40,7 @@ def test_http_exception_handler(client):
 
 def test_unknown_exception_handler(client):
     """Test handling of unexpected exceptions"""
-    with patch("testbed.api.manager.TestbedManager.get_testbed") as mock_get_testbed:
+    with patch("testbeds.api.manager.TestbedManager.get_testbed") as mock_get_testbed:
         mock_get_testbed.side_effect = Exception("Unexpected database error")
 
         response = client.get("/testbeds/test-id", headers={"X-API-Key": "valid-key"})
@@ -54,15 +54,15 @@ def test_unknown_exception_handler(client):
 def test_cleanup_exception_handler(client):
     """Test handling of exceptions during cleanup"""
     with patch(
-        "testbed.api.manager.TestbedManager.cleanup_user_resources"
+        "testbeds.api.manager.TestbedManager.cleanup_user_resources"
     ) as mock_cleanup:
-        mock_cleanup.side_effect = Exception("Database connection failed")
+        mock_cleanup.side_effect = Exception("Connection failed")
 
         response = client.post("/cleanup", headers={"X-API-Key": "valid-key"})
         assert response.status_code == 500
 
         data = json.loads(response.data)
-        assert data["error"] == "Database connection failed"
+        assert data["error"] == "An unexpected error occurred"
 
 
 def test_api_key_validation(client):

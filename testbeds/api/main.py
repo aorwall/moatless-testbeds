@@ -46,6 +46,7 @@ def configure_opentelemetry(app):
         logger.error("Failed to import Azure Monitor instrumentation")
         return
 
+    logger.info("Configuring OpenTelemetry with Azure Monitor")
     custom_sampler = ApplicationInsightsSampler(
         sampling_ratio=0.1,  # 10% sampling rate
     )
@@ -94,10 +95,6 @@ def create_app():
         client = testbed_manager.create_client(testbed_id, user_id=user_id)
         return client
 
-    @app.errorhandler(TestbedNotFoundError)
-    def handle_testbed_not_found(e):
-        return jsonify({"error": "Testbed not found"}), 400
-
     @app.route("/health", methods=["GET"])
     def health_check():
         return jsonify({"status": "healthy"}), 200
@@ -136,7 +133,6 @@ def create_app():
     def delete_testbed(testbed_id: str, user_id: str):
         logger.info(f"delete_testbed(testbed_id={testbed_id}, user_id={user_id})")
         testbed_manager.delete_testbed(testbed_id, user_id)
-        logger.info(f"Testbed deleted: id={testbed_id}, user_id={user_id}")
         return jsonify({"message": "Testbed killed"}), 200
 
     @app.route("/testbeds/<testbed_id>/apply-patch", methods=["POST"])
@@ -219,6 +215,15 @@ def create_app():
         result = client.get_execution_status()
         return jsonify(result.model_dump()), 200
 
+    @app.route("/testbeds/<testbed_id>/health", methods=["GET"])
+    @validate_api_key
+    def check_testbed_health(testbed_id: str, user_id: str):
+        logger.debug(f"check_testbed_health(testbed_id={testbed_id}, user_id={user_id})")
+        client = get_testbed_client(testbed_id, user_id)
+        health_status = client.check_health()
+
+        return jsonify(health_status), 200 if health_status["status"] == "OK" else 503
+
     @app.route("/testbeds", methods=["DELETE"])
     @validate_api_key
     def delete_all_testbeds(user_id: str):
@@ -267,15 +272,6 @@ def create_app():
         reference_code = str(uuid.uuid4())
         logger.exception(f"An unexpected error occurred. Reference code: {reference_code}")
         return jsonify({"error": "An unexpected error occurred", "reference_code": reference_code}), 500
-
-    @app.route("/testbeds/<testbed_id>/health", methods=["GET"])
-    @validate_api_key
-    def check_testbed_health(testbed_id: str, user_id: str):
-        logger.debug(f"check_testbed_health(testbed_id={testbed_id}, user_id={user_id})")
-        client = get_testbed_client(testbed_id, user_id)
-        health_status = client.check_health()
-        
-        return jsonify(health_status), 200 if health_status["status"] == "OK" else 503
 
     return app
 

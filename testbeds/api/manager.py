@@ -121,32 +121,46 @@ class TestbedManager:
         logger.info(
             f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id}, run_id: {run_id})"
         )
-        job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
-        logger.info(f"Found {len(job_list.items)} jobs in namespace {self.namespace}")
-        for job in job_list.items:
-            if (
-                job.metadata.labels.get("instance-id") == instance_id
-                and job.metadata.labels.get("user-id") == user_id
-                and job.metadata.labels.get("run-id") == run_id
-            ):
-                logger.info(
-                    f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id}, run_id: {run_id}) found existing testbed."
-                )
-                status = self._read_testbed_status(job.metadata.name)
-                logger.info(
-                    f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id}, run_id: {run_id}) found existing testbed with status {status}."
-                )
-                return TestbedSummary(
-                    testbed_id=job.metadata.name,
-                    instance_id=job.metadata.labels.get("instance-id", "unknown"),
-                    status=status,
-                    run_id=run_id,
-                )
-            else:
-                logger.info(
-                    f"get_or_create_testbed(user: {user_id}, instance_id: {instance_id}, run_id: {run_id}) found existing testbed with different instance_id {job.metadata.labels.get('instance-id')} or user_id {job.metadata.labels.get('user-id')} or run_id {job.metadata.labels.get('run-id')}."
-                )
-
+        
+        # Wait for any deletion to complete before creating a new job
+        start_time = time.time()
+        while True:
+            if time.time() - start_time > timeout:
+                raise TimeoutError("Timed out waiting for previous job deletion to complete")
+                
+            try:
+                job_list = self.batch_v1.list_namespaced_job(namespace=self.namespace)
+                found_job = None
+                for job in job_list.items:
+                    if (
+                        job.metadata.labels.get("instance-id") == instance_id
+                        and job.metadata.labels.get("user-id") == user_id
+                        and job.metadata.labels.get("run-id") == run_id
+                    ):
+                        # Check if job is being deleted
+                        if job.metadata.deletion_timestamp:
+                            time.sleep(0.5)
+                            continue
+                        found_job = job
+                        break
+                
+                if found_job:
+                    status = self._read_testbed_status(found_job.metadata.name)
+                    logger.info(
+                        f"Found existing testbed job {found_job.metadata.name} with status {status}"
+                    )
+                    return TestbedSummary(
+                        testbed_id=found_job.metadata.name,
+                        instance_id=found_job.metadata.labels.get("instance-id", "unknown"),
+                        status=status,
+                        run_id=run_id,
+                    )
+                break  # No existing job found, exit loop
+                
+            except client.exceptions.ApiException as e:
+                logger.warning(f"API error while checking jobs: {e}")
+                time.sleep(0.5)
+        
         return self.create_testbed(instance_id, user_id, timeout, run_id)
 
     def create_testbed(
@@ -242,7 +256,6 @@ class TestbedManager:
         testbed_id: str,
         user_id: str = "default",
         timeout: int = 30,
-        log_dir: str | None = None,
         run_id: str = "default",
     ) -> TestbedClient:
         logger.debug(
@@ -283,7 +296,6 @@ class TestbedManager:
             instance_id=instance_id,
             base_url=base_url,
             startup_timeout=timeout,
-            log_dir=log_dir,
             ignored_tests=self.ignored_tests.get(instance_id, {}),
             in_cluster=self.in_cluster,
             namespace=self.namespace,
@@ -330,7 +342,6 @@ class TestbedManager:
                 )
 
                 logger.info(f"Deleted job for {testbed_id}")
-                return response
             except Exception as e:
                 logger.error(f"Failed to delete job {testbed_id}: {str(e)}")
 

@@ -117,7 +117,7 @@ def load_swebench_dataset(
             _SWEBENCH_DATASET = [SWEbenchInstance(**instance) for instance in data]
             return _SWEBENCH_DATASET
 
-    logger.info(f"Loading dataset from Hugging Face Datasets: {name}")
+    logger.debug(f"Loading dataset from Hugging Face Datasets: {name}")
     # For other datasets or if local file doesn't exist, proceed with original loading method
     # Load from local .json/.jsonl file
     if name.endswith(".json") or name.endswith(".jsonl"):

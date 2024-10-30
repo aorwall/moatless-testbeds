@@ -10,7 +10,7 @@ class SWEbenchInstance(BaseModel):
     repo: str = Field(..., description="Repository")
     instance_id: str = Field(..., description="Unique identifier for the instance")
     base_commit: str = Field(..., description="Base commit hash")
-    patch: str = Field(..., description="Patch to be applied")
+    patch: str | None = Field(None, description="Patch to be applied")
     test_patch: str = Field(..., description="Test patch to be applied")
     problem_statement: str = Field(..., description="Description of the problem")
     hints_text: Optional[str] = Field(
@@ -116,6 +116,14 @@ class TestResult(BaseModel):
 class TestRunResponse(BaseModel):
     test_results: List[TestResult] = Field(..., description="List of test results")
     output: Optional[str] = Field(default=None, description="Output of the test run")
+
+    def get_summary(self) -> str:
+        passed = sum(1 for t in self.test_results if t.status == TestStatus.PASSED)
+        failed = sum(1 for t in self.test_results if t.status == TestStatus.FAILED)
+        skipped = sum(1 for t in self.test_results if t.status == TestStatus.SKIPPED)
+        errors = sum(1 for t in self.test_results if t.status == TestStatus.ERROR)
+        
+        return f"Test Results: {passed} passed, {failed} failed, {skipped} skipped, {errors} errors"
 
 
 class EvalTestResult(BaseModel):

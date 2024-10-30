@@ -37,25 +37,19 @@ def run_evaluation(instance_id: str):
         )
 
         logger.info("Creating testbed instance...")
-        testbed = sdk.create_client(instance_id=instance_id)
-        logger.info(f"Created Testbed ID: {testbed.testbed_id}")
+        with sdk.create_client(instance_id=instance_id) as testbed:
+            logger.info(f"Created Testbed ID: {testbed.testbed_id}")
 
-        logger.info(f"Waiting for testbed to be ready...")
-        testbed.wait_until_ready()
+            logger.info("Running evaluation script...")
+            result = testbed.run_evaluation()
 
-        logger.info("Running evaluation script...")
-        result = testbed.run_evaluation()
+            if result.resolved:
+                logger.info("✅ Evaluation completed successfully!")
+            else:
+                logger.info(f"Evaluation output:\n{result.model_dump_json(indent=2)}")
+                logger.error("❌ Evaluation failed")
 
-        logger.info("Cleaning up testbed instance...")
-        sdk.delete_testbed(testbed_id=testbed.testbed_id)
-
-        if result.resolved:
-            logger.info("✅ Evaluation completed successfully!")
-        else:
-            logger.info(f"Evaluation output:\n{result.model_dump_json(indent=2)}")
-            logger.error("❌ Evaluation failed")
-
-        return result.resolved
+            return result.resolved
 
     except Exception as e:
         logger.exception(f"❌ Evaluation failed")

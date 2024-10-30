@@ -13,17 +13,14 @@ While initially tested with SWE-Bench's docker containerization solution, it sup
 from testbeds.sdk import TestbedSDK
 
 sdk = TestbedSDK(
-    base_url="http://<API-IP>",
+    base_url="https://testbeds.moatless.ai", # Replace with your API URL
     api_key="<API-KEY>"
 )
 
-testbed = sdk.create_client(instance_id="<INSTANCE-ID>")
-testbed.wait_until_ready()
-
-test_files = ["path/to/test_file.py"]
-result = testbed.run_tests(test_files)
-
-print(result.model_dump_json(indent=2))
+with sdk.create_client(instance_id="<INSTANCE-ID>") as testbed:
+    test_files = ["path/to/test_file.py"]
+    result = testbed.run_tests(test_files)
+    print(result.model_dump_json(indent=2))
 ```
 
 ## Installation

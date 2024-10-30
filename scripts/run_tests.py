@@ -37,25 +37,19 @@ def run_tests(instance_id: str, test_files: list[str] = None):
         )
 
         logger.info("Creating testbed instance...")
-        testbed = sdk.create_client(instance_id=instance_id)
-        logger.info(f"Created Testbed ID: {testbed.testbed_id}")
+        with sdk.create_client(instance_id=instance_id) as testbed:
+            logger.info(f"Created Testbed ID: {testbed.testbed_id}")
 
-        logger.info(f"Waiting for testbed to be ready...")
-        testbed.wait_until_ready()
+            # Use provided test files or fall back to test_patch files
+            if test_files is None:
+                test_files = testbed.test_spec.get_test_patch_files()
 
-        # Use provided test files or fall back to test_patch files
-        if test_files is None:
-            test_files = testbed.test_spec.get_test_patch_files()
+            logger.info("Running tests...")
+            result = testbed.run_tests(test_files)
 
-        logger.info("Running tests...")
-        result = testbed.run_tests(test_files)
+            logger.info(result.get_summary())
 
-        logger.info("Cleaning up testbed instance...")
-        sdk.delete_testbed(testbed_id=testbed.testbed_id)
-
-        logger.info(f"Test results:\n{result.model_dump_json(indent=2)}")
-
-        return True
+            return True
 
     except Exception as e:
         logger.exception(f"❌ Failed to run tests")

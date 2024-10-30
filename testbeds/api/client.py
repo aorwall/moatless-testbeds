@@ -30,7 +30,6 @@ class TestbedClient:
         base_url: str,
         namespace: str = "testbed-dev",
         testbed_namespace: str = "testbed-dev",
-        log_dir: str | None = None,
         test_spec: TestSpec | None = None,
         startup_timeout=600,
         ignored_tests: dict[str, list[str]] = {},
@@ -53,13 +52,6 @@ class TestbedClient:
 
         self.ignored_tests = ignored_tests
 
-        if log_dir:
-            self.log_dir = f"{log_dir}/{testbed_id}" if log_dir else None
-            if not os.path.exists(self.log_dir):
-                os.makedirs(self.log_dir)
-        else:
-            self.log_dir = None
-
         self.instance_id = instance_id
         self.test_spec = test_spec
         self.startup_timeout = startup_timeout
@@ -77,10 +69,17 @@ class TestbedClient:
     def base_url(self) -> str | None:
         return self._base_url
 
-    def check_health(self, timeout: int = 30) -> bool:
-        response = requests.get(f"{self.base_url}/health", timeout=timeout)
-        response.raise_for_status()
-        return response.json()
+    def check_health(self, timeout: int = 30) -> dict:
+        try:
+            response = requests.get(f"{self.base_url}/health", timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.ConnectionError:
+            logger.debug(f"Connection refused to testbed {self.testbed_id} - service likely not ready yet")
+            return {"status": "unavailable"}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error checking health for testbed {self.testbed_id}: {str(e)}")
+            raise
 
     def get_testbed(self) -> Optional[TestbedDetailed]:
         job = self._get_job()
@@ -207,14 +206,6 @@ class TestbedClient:
             response = self.get_execution_status()
             sleep(0.1)
 
-        if self.log_dir:
-            command_str = "\n".join(commands) if isinstance(commands, list) else commands
-            datetime_str = time.strftime("%Y%m%d-%H%M%S")
-            with open(f"{self.log_dir}/{datetime_str}_execute.log", "a") as f:
-                f.write("\"Commands:\n" + command_str + "\n")
-                f.write("\nResponse:\n" + json.dumps(response.model_dump(exclude={"output"})) + "\n")
-                f.write("\nOutput:\n" + response.output + "\n")
-
         return response
 
     def execute_async(self, commands: list[str] | str) -> CommandExecutionResponse:
@@ -227,17 +218,6 @@ class TestbedClient:
             return CommandExecutionResponse.model_validate(response.json())
         except requests.RequestException as e:
             logger.error(f"Error during get_execution_status: {str(e)}")
-            raise e
-
-    def list_executed_commands(self) -> list[CommandExecutionSummary]:
-        try:
-            response = requests.get(f"{self.base_url}/exec")
-            response.raise_for_status()
-            return [
-                CommandExecutionSummary.model_validate(item) for item in response.json()
-            ]
-        except requests.RequestException as e:
-            logger.error(f"Error during list_executed_commands: {str(e)}")
             raise e
 
     def get_diff(self) -> str:
@@ -301,13 +281,6 @@ class TestbedClient:
         except requests.RequestException as e:
             logger.error(f"Error saving file {file_path}: {str(e)}")
             raise e
-        finally:
-            if self.log_dir:
-                datetime_str = time.strftime("%Y%m%d-%H%M%S")
-                with open(f"{self.log_dir}/{datetime_str}_save_file.log", "a") as f:
-                    f.write(f"File path: {file_path}\n")
-                    f.write(f"Content:\n{content}\n")
-
     def get_file(self, file_path: str):
         try:
             params = {"file_path": file_path}
