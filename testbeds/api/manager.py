@@ -452,15 +452,28 @@ class TestbedManager:
     def _read_testbed_status(
         self, job_name: str
     ) -> str:
+        # First check if job exists
+        job = self._get_job(job_name)
+        if not job:
+            logger.debug(f"Job {job_name} not found")
+            return "NotFound"
+        
         pod_list = self.core_v1.list_namespaced_pod(
             namespace=self.namespace, label_selector=f"job-name={job_name}"
         )
-        pod_status = "Unknown"
-        if pod_list.items:
-            pod = pod_list.items[0]
-            pod_status = pod.status.phase
-        else:
-            logger.warning(f"Pod not found for job {job_name}. Pod list: {pod_list}")
+        
+        # If no pods found, we're still pending
+        if not pod_list.items:
+            logger.debug(f"Pod not found for job {job_name}. Pod list: {pod_list}")
+            return "Pending"
+            
+        pod = pod_list.items[0]
+        
+        # If pod exists but no IP, we're still pending
+        if not pod.status.pod_ip:
+            return "Pending"
+            
+        pod_status = pod.status.phase
 
         # Only check service status if not in cluster
         if self.in_cluster:

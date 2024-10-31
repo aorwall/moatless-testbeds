@@ -219,9 +219,15 @@ def create_app():
     @validate_api_key
     def check_testbed_health(testbed_id: str, user_id: str):
         logger.debug(f"check_testbed_health(testbed_id={testbed_id}, user_id={user_id})")
+        
+        # First check if testbed exists and is starting up
+        status = testbed_manager.get_testbed_status(testbed_id, user_id)
+        if status["status"] in ["Pending", "Unknown"]:
+            return jsonify({"status": "STARTING"}), 200
+            
+        # If running, proceed with health check
         client = get_testbed_client(testbed_id, user_id)
         health_status = client.check_health()
-
         return jsonify(health_status), 200 if health_status["status"] == "OK" else 503
 
     @app.route("/testbeds", methods=["DELETE"])
