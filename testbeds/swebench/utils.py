@@ -64,12 +64,12 @@ def load_swebench_instance(
     # Try to load from individual instance file first
     instance_path = Path("/app/instances") / f"{instance_id}.json"
     if instance_path.exists():
-        logger.info(f"Loading instance from file: {instance_path.absolute()}")
+        logger.debug(f"Loading instance from file: {instance_path.absolute()}")
         with instance_path.open("r", encoding="utf-8") as f:
             instance_data = json.load(f)
             return SWEbenchInstance(**instance_data)
 
-    logger.info(f"Loading instance from dataset: {name} {split}")
+    logger.debug(f"Loading instance from dataset: {name} {split}")
     # Fall back to original loading method
     if name.lower() in {"swe-bench", "swebench", "swe_be"}:
         name = "princeton-nlp/SWE-bench"
