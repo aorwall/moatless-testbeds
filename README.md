@@ -49,8 +49,7 @@ index abc123..def456 100644
     # Run the tests and get results
     result = testbed.run_tests(
         test_files=test_files,
-        patch=patch,
-        timeout=300  # Optional: Set custom timeout in seconds
+        patch=patch
     )
     print(f"Test Status: {result.get_summary()}")
 ```
