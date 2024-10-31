@@ -215,7 +215,10 @@ class TestbedClient:
         try:
             response = requests.get(f"{self.base_url}/exec")
             response.raise_for_status()
-            return CommandExecutionResponse.model_validate(response.json())
+            response = CommandExecutionResponse.model_validate(response.json())
+            if response.status == "completed":
+                logger.info(f"Command execution completed in testbed {self.testbed_id}")
+            return response
         except requests.RequestException as e:
             logger.error(f"Error during get_execution_status: {str(e)}")
             raise e

@@ -5,6 +5,7 @@ import time
 import uuid
 from time import sleep
 from typing import Dict, Any, List
+import hashlib
 
 import requests
 from requests.exceptions import RequestException, HTTPError, Timeout, ConnectionError
@@ -18,6 +19,12 @@ from testbeds.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL, RUN_TE
 from testbeds.swebench.log_parsers import parse_log
 from testbeds.swebench.test_spec import TestSpec
 from testbeds.swebench.utils import load_swebench_instance
+from testbeds.sdk.exceptions import (
+    TestbedAuthenticationError,
+    TestbedError,
+    TestbedConnectionError,
+    TestbedTimeoutError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,7 @@ class TestbedClient:
         api_key: str | None = None,
         log_dir: str | None = None,
         ignored_tests: dict[str, list[str]] = {},
+        test_cache: dict | None = None,
     ):
         assert testbed_id, "Testbed ID is required"
 
@@ -71,6 +79,9 @@ class TestbedClient:
 
         self.trace_id = uuid.uuid4().hex[:32]
         self.current_span_id = None
+
+        self.test_cache = test_cache
+        self._current_patch = None
 
     def __enter__(self):
         self.wait_until_ready()
@@ -123,7 +134,7 @@ class TestbedClient:
 
         while retries < max_retries:
             if time.time() - start_time > operation_timeout:
-                raise TimeoutError(
+                raise TestbedTimeoutError(
                     f"Operation timed out after {operation_timeout} seconds"
                 )
 
@@ -134,36 +145,50 @@ class TestbedClient:
                 response = requests.request(
                     method, url, headers=headers, timeout=30, **kwargs
                 )
+                
                 response.raise_for_status()
                 logger.debug(f"Request to {url} successful")
                 return response.json()
-            except (RequestException, HTTPError) as e:
+            except requests.exceptions.Timeout:
                 retries += 1
-                if isinstance(e, HTTPError) and e.response.status_code < 500:
-                    logger.error(
-                        f"Client error during request to {url}: {e}. Response: {e.response.text}"
-                    )
-                    raise
                 if retries == max_retries:
-                    logger.error(f"Max retries reached for {url}: {e}")
-                    raise
+                    raise TestbedTimeoutError(f"Request to {url} timed out after {max_retries} retries")
+            except requests.exceptions.ConnectionError as e:
+                retries += 1
+                if retries == max_retries:
+                    raise TestbedConnectionError(f"Failed to connect to testbed after {max_retries} retries") from e
+            except requests.exceptions.HTTPError as e:
+                error_message = str(e)
+                error_code = None
+                details = {}
 
-                if isinstance(e, Timeout):
-                    logger.warning(f"Request to {url} timed out. Retrying...")
-                elif isinstance(e, ConnectionError):
-                    logger.warning(f"Connection error occurred for {url}. Retrying...")
-                else:
-                    logger.warning(f"Error during request to {url}: {e}. Retrying...")
+                try:
+                    error_data = e.response.json()
+                    error_message = error_data.get('message')
+                    error_code = error_data.get('error')
+                    details = error_data
+                except (ValueError, AttributeError):
+                    error_message = e.response.text or str(e)
 
-                logger.info(
-                    f"Retrying in {retry_delay} seconds... (Attempt {retries + 1}/{max_retries})"
-                )
-                time.sleep(retry_delay)
-                retry_delay = min(
-                    retry_delay * 2, max_retry_delay
-                )  # Exponential backoff with max delay
+                if 400 <= e.response.status_code < 500:
+                    if e.response.status_code == 401:
+                        raise TestbedAuthenticationError(error_message, error_code, details) from e
+                    raise TestbedError(error_message, error_code, details) from e
+                
+                # Only retry on server errors (500+)
+                retries += 1
+                if retries == max_retries:
+                    raise TestbedError(
+                        f"Server error after {max_retries} retries: {error_message}",
+                        error_code,
+                        details
+                    ) from e
 
-        raise Exception(f"Unexpected error: Max retries reached for {url}")
+            logger.warning(f"Request failed, retrying in {retry_delay} seconds... ({retries}/{max_retries})")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
+
+        raise TestbedError(f"Max retries reached for {url}")
 
     def wait_until_ready(self, timeout: float = 600):
         """Wait until testbed is healthy and ready."""
@@ -227,10 +252,31 @@ class TestbedClient:
         logger.debug(f"Diff after patch: \n{diff}")
         return diff
 
+    def _generate_cache_key(self, test_files: list[str] | None, patch: str | None) -> str:
+        """Generate a unique cache key based on test files and patch content"""
+        key_parts = []
+        if test_files:
+            key_parts.extend(sorted(test_files))
+        if patch:
+            key_parts.append(patch)
+        if not key_parts:
+            key_parts.append("all_tests_no_patch")
+            
+        combined = "|".join(key_parts)
+        return hashlib.sha256(combined.encode()).hexdigest()
+
     def run_tests(
         self, test_files: list[str] | None = None, patch: str | None = None
     ) -> TestRunResponse:
         logger.debug(f"Executing run_tests with test_files={test_files} and patch={patch}")
+        
+        if self.test_cache is not None:
+            cache_key = self._generate_cache_key(test_files, patch)
+            cached_result = self.test_cache.get(cache_key)
+            if cached_result:
+                logger.info("Returning cached test results")
+                return cached_result
+
         if patch:
             self.apply_patch(patch)
 
@@ -277,7 +323,13 @@ class TestbedClient:
         else:
             logger.info(f"Did run {len(test_result)} tests. {statuses}")
 
-        return TestRunResponse(test_results=filtered_test_result, output=response.output)
+        result = TestRunResponse(test_results=filtered_test_result, output=response.output)
+        
+        if self.test_cache is not None:
+            cache_key = self._generate_cache_key(test_files, patch)
+            self.test_cache[cache_key] = result
+            
+        return result
 
     def run_evaluation(
         self, run_id: str | None = None, patch: str | None = None

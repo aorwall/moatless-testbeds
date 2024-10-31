@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import uuid
+import signal
 from functools import wraps
 
 from flask import Flask, request, jsonify
@@ -16,6 +17,14 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+
+
+class WorkerTimeoutException(Exception):
+    pass
+
+
+def timeout_handler(signum, frame):
+    raise WorkerTimeoutException("Request timed out")
 
 
 def load_api_keys():
@@ -71,6 +80,58 @@ def create_app():
     api_keys = load_api_keys()
 
     testbed_manager = TestbedManager()
+
+    @app.before_request
+    def setup_timeout():
+        # Setup the timeout handler
+        signal.signal(signal.SIGALRM, timeout_handler)
+        # Set the alarm
+        signal.alarm(30)  # 30 seconds timeout
+
+    @app.after_request
+    def clear_timeout(response):
+        # Clear the alarm
+        signal.alarm(0)
+        return response
+
+    @app.errorhandler(WorkerTimeoutException)
+    def handle_timeout_error(e):
+        logger.error("Request timed out", exc_info=True)
+        return jsonify({
+            "error": "Request timed out",
+            "code": 504,
+            "reference_code": str(uuid.uuid4())
+        }), 504
+
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        # Clear any pending alarms
+        signal.alarm(0)
+        
+        reference_code = str(uuid.uuid4())
+        
+        if isinstance(e, WorkerTimeoutException):
+            logger.error(f"Request timed out. Reference code: {reference_code}", exc_info=True)
+            return jsonify({
+                "error": "Request timed out",
+                "reference_code": reference_code,
+                "code": 504
+            }), 504
+        
+        if isinstance(e, HTTPException):
+            logger.exception(f"An HTTP error occurred. Reference code: {reference_code}")
+            return jsonify({
+                "reference_code": reference_code,
+                "code": e.code,
+                "error": e.name,
+                "description": e.description
+            }), e.code
+
+        logger.exception(f"An unexpected error occurred. Reference code: {reference_code}")
+        return jsonify({
+            "error": "An unexpected error occurred", 
+            "reference_code": reference_code
+        }), 500
 
     def validate_api_key(f):
         @wraps(f)
