@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 from time import sleep
 from typing import Optional
@@ -246,6 +247,12 @@ class TestbedClient:
         logger.info(f"Applying patch to testbed {self.testbed_id}")
         test_spec = self._get_test_spec()
 
+        patch_files = self._get_patch_files(patch)
+        for patch_file in patch_files:
+            file = self.get_file(patch_file)
+            if not file:
+                self.save_file(patch_file, "")
+
         patch_filepath = f"/shared/patch.diff"
         if not patch.endswith('\n'):
             patch += '\n'
@@ -259,6 +266,11 @@ class TestbedClient:
         diff = self.get_diff()
         logger.debug(f"Diff after patch: \n{diff}")
         return diff
+
+    def _get_patch_files(self, patch: str) -> list:
+        diff_pat = r"diff --git a/.* b/(.*)"
+        patch_files = re.findall(diff_pat, patch)
+        return patch_files
 
     def run_tests(
             self,
@@ -284,6 +296,7 @@ class TestbedClient:
         except requests.RequestException as e:
             logger.error(f"Error saving file {file_path}: {str(e)}")
             raise e
+
     def get_file(self, file_path: str):
         try:
             params = {"file_path": file_path}
@@ -295,6 +308,9 @@ class TestbedClient:
             else:
                 return data
         except requests.RequestException as e:
+            if e.response.status_code == 404:
+                return None
+
             logger.error(f"Error getting file: {str(e)}")
             return {"error": str(e)}
 

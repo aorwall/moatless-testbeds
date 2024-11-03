@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+import re
 import time
 import uuid
 from time import sleep
@@ -35,6 +36,7 @@ class TestbedClient:
         testbed_id: str,
         instance_id: str | None = None,
         instance: SWEbenchInstance | None = None,
+        dataset_name: str = "princeton-nlp/SWE-bench_Lite",
         run_id: str = "default",
         base_url: str | None = None,
         api_key: str | None = None,
@@ -60,7 +62,7 @@ class TestbedClient:
         self.api_key = api_key
 
         if not instance:
-            self.instance = load_swebench_instance(instance_id)
+            self.instance = load_swebench_instance(instance_id, name=dataset_name)
         else:
             self.instance = instance
 
@@ -96,12 +98,9 @@ class TestbedClient:
         headers = self._generate_headers()
 
         response = requests.get(url, headers=headers, timeout=timeout)
-        if response.status_code == 200:
-            return response.json().get("status") == "OK"
-        elif response.status_code == 503:
-            return False
-        else:
-            raise Exception(f"Unexpected status code {response.status_code}. Response: {response.text}")
+        response.raise_for_status()
+
+        return response.status_code == 200 and response.json().get("status") == "OK"
 
     def _generate_traceparent(self):
         return f"00-{self.trace_id}-{self.current_span_id or uuid.uuid4().hex[:16]}-01"
@@ -251,6 +250,7 @@ class TestbedClient:
         diff = self.get_diff()
         logger.debug(f"Diff after patch: \n{diff}")
         return diff
+
 
     def _generate_cache_key(self, test_files: list[str] | None, patch: str | None) -> str:
         """Generate a unique cache key based on test files and patch content"""
