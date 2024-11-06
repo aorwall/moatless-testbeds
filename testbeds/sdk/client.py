@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 import hashlib
 
 import requests
-from requests.exceptions import RequestException, HTTPError, Timeout, ConnectionError
+from requests.exceptions import RequestException, Timeout
 
 from testbeds.schema import (
     EvaluationResult,
@@ -192,7 +192,9 @@ class TestbedClient:
     def wait_until_ready(self, timeout: float = 600):
         """Wait until testbed is healthy and ready."""
         start_time = time.time()
-        while time.time() - start_time < timeout:
+        wait_time = 0
+        while wait_time < timeout:
+            wait_time = time.time() - start_time
             try:
                 if self.check_health():
                     logger.debug(f"Testbed {self.testbed_id} is healthy and ready")
@@ -200,18 +202,21 @@ class TestbedClient:
                 
                 logger.debug(f"Testbed {self.testbed_id} not ready yet, waiting...")
                 time.sleep(1)
+            except Timeout as e:
+                logger.warning(f"Testbed {self.testbed_id} not ready yet, will retry (Tried for {wait_time} seconds)")
+                time.sleep(1)
             except RequestException as e:
-                if e.response.status_code == 503:
-                    logger.warning(f"Testbed {self.testbed_id} not ready yet, waiting...  {str(e)} {e.response.text}")
+                if e.response.status_code in [503, 504]:
+                    logger.warning(f"Got response {e.response.status_code} indicating that the testbed {self.testbed_id} might not be ready yet, will retry...  (Tried for {wait_time} seconds)")
                     time.sleep(1)
                 else:
                     logger.error(f"Health check failed. {str(e)} {e.response.text}")
                     raise e
             except Exception as e:
-                logger.warning(f"Health check failed: {str(e)}, retrying...")
+                logger.warning(f"Health check failed: {str(e)}, retrying... (Tried for {wait_time} seconds)")
                 time.sleep(1)
                 
-        raise TimeoutError(f"Testbed {self.testbed_id} not ready within {timeout} seconds")
+        raise TimeoutError(f"Testbed {self.testbed_id} not ready within {wait_time} seconds")
 
     def status(self):
         return self._request("GET", "status")
