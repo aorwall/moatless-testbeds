@@ -59,7 +59,7 @@ _SWEBENCH_DATASET = None
 
 
 def load_swebench_instance(
-    instance_id: str, name="princeton-nlp/SWE-bench_Lite", split="test"
+    instance_id: str, name: str | None = None, split: str = "test"
 ) -> Optional[SWEbenchInstance]:
     # Try to load from individual instance file first
     instance_path = Path("/app/instances") / f"{instance_id}.json"
@@ -68,19 +68,6 @@ def load_swebench_instance(
         with instance_path.open("r", encoding="utf-8") as f:
             instance_data = json.load(f)
             return SWEbenchInstance(**instance_data)
-
-    logger.debug(f"Loading instance from dataset: {name} {split}")
-    # Fall back to original loading method
-    if name.lower() in {"swe-bench", "swebench", "swe_be"}:
-        name = "princeton-nlp/SWE-bench"
-    elif name.lower() in {
-        "swe-bench-lite",
-        "swebench-lite",
-        "swe_bench_lite",
-        "swe-bench_lite",
-        "lite",
-    }:
-        name = "princeton-nlp/SWE-bench_Lite"
 
     instances = load_swebench_dataset(name, split)
 
@@ -93,7 +80,7 @@ def load_swebench_instance(
 
 
 def load_swebench_dataset(
-    name="princeton-nlp/SWE-bench", split="test"
+    name: str | None = None, split: str = "test"
 ) -> list[SWEbenchInstance]:
     """
     Load SWE-bench dataset from memory if available (only for princeton-nlp/SWE-bench),
@@ -101,12 +88,11 @@ def load_swebench_dataset(
     or from Hugging Face Datasets or local .json/.jsonl file
     """
     global _SWEBENCH_DATASET
+    if _SWEBENCH_DATASET is not None:
+        return _SWEBENCH_DATASET
+    instances = []
 
-    # Only use in-memory caching for princeton-nlp/SWE-bench
-    if name == "princeton-nlp/SWE-bench_Lite":
-        # If dataset is already in memory, return it
-        if _SWEBENCH_DATASET is not None:
-            return _SWEBENCH_DATASET
+    if not name:
 
         # Update the local file path to use /app directory
         local_file = Path("/app/swebench_dataset.json")
@@ -117,26 +103,17 @@ def load_swebench_dataset(
             _SWEBENCH_DATASET = [SWEbenchInstance(**instance) for instance in data]
             return _SWEBENCH_DATASET
 
-    logger.debug(f"Loading dataset from Hugging Face Datasets: {name}")
-    # For other datasets or if local file doesn't exist, proceed with original loading method
-    # Load from local .json/.jsonl file
-    if name.endswith(".json") or name.endswith(".jsonl"):
-        return [
-            SWEbenchInstance.model_validate(instance)
-            for instance in json.loads(Path(name).read_text())
-        ]
+        # TODO: Load both Lite and Verified as default
 
-    # Load from Hugging Face Datasets
-    if name.lower() in {"swe-bench", "swebench", "swe_bench"}:
-        name = "princeton-nlp/SWE-bench"
-    elif name.lower() in {
-        "swe-bench-lite",
-        "swebench-lite",
-        "swe_bench_lite",
-        "swe-bench_lite",
-        "lite",
-    }:
-        name = "princeton-nlp/SWE-bench_Lite"
+        instances.extend(download_instances("princeton-nlp/SWE-bench_Lite"))
+        instances.extend(download_instances("princeton-nlp/SWE-bench_Verified"))
+        _SWEBENCH_DATASET = instances
+    else:
+        instances = download_instances(name, split)
+
+    return instances
+
+def download_instances(name: str, split: str = "test"):
     dataset = cast(Dataset, load_dataset(name, split=split))
 
     instances = []
@@ -149,9 +126,7 @@ def load_swebench_dataset(
             del instance["PASS_TO_PASS"]
 
         instances.append(SWEbenchInstance(**instance))
-
     return instances
-
 
 def get_first_idx(charlist):
     """Get index of first occurrence of "-" or "+" in charlist"""

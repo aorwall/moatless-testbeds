@@ -72,6 +72,8 @@ def parse_log(log: str, repo: str) -> list[TestResult]:
                 traceback_result = parse_traceback(traceback)
                 if traceback_result:
                     test_results.append(traceback_result)
+            else:
+                logger.warning(f"No tests found in log: {log}")
 
     # Skip testbed prefix in file paths
     for result in test_results:
@@ -103,6 +105,7 @@ def parse_log_pytest(log: str) -> list[TestResult]:
         (re.compile(r"ERROR at teardown of (.*) ___.*"), "teardown"),
         (re.compile(r"ERROR (.*) ___.*"), "general"),
     ]
+    log = clean_log(log)
 
     for line in log.split("\n"):
         if "short test summary info" in line:
@@ -256,11 +259,19 @@ def parse_log_pytest(log: str) -> list[TestResult]:
 
     # Add failure outputs to corresponding failed or error tests
     for test in test_results:
+        if test.status in [TestStatus.PASSED, TestStatus.SKIPPED]:
+            continue
+
         if test.method in failure_outputs:
             test.failure_output = "\n".join(failure_outputs[test.method])
-
-        if test.name in failure_outputs:
+        elif test.name in failure_outputs:
             test.failure_output = "\n".join(failure_outputs[test.name])
+
+        # Truncate long outputs with teardown capture
+        if test.failure_output and len(test.failure_output.splitlines()) > 25:
+            teardown_idx = test.failure_output.find("--------------------------- Captured stdout teardown ---------------------------")
+            if teardown_idx != -1:
+                test.failure_output = test.failure_output[:teardown_idx].rstrip()
 
     return test_results
 
@@ -684,6 +695,21 @@ def parse_log_matplotlib(log: str) -> list[TestResult]:
             status = TestStatus(test_case[0])
             test_results.append(TestResult(status=status, name=test_case[1]))
     return test_results
+
+
+def clean_log(log: str) -> str:
+    """Remove ANSI color codes and escape sequences from log output"""
+    # Remove ANSI color codes like [0m[37m etc
+    log = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', log)
+    
+    # Remove specific problematic control characters while preserving important ones
+    # \x0b: vertical tab
+    # \x0c: form feed
+    # \x1c-\x1f: file separators, group separators etc
+    control_chars = '\x0b\x0c\x1c\x1d\x1e\x1f'
+    log = log.translate(str.maketrans("", "", control_chars))
+    
+    return log
 
 
 MAP_REPO_TO_PARSER = {

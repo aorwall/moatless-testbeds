@@ -149,8 +149,8 @@ class EvaluationResult(BaseModel):
     patch_applied: bool = Field(
         default=False, description="Whether the patch was successfully applied"
     )
-    resolved: bool = Field(
-        default=False, description="Whether the problem was resolved"
+    resolved: Optional[bool] = Field(
+        default=None, description="Whether the problem was resolved"
     )
     tests_status: TestsStatus = Field(
         default_factory=TestsStatus, description="Status of all tests"

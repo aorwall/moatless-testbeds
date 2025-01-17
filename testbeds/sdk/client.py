@@ -14,7 +14,7 @@ from requests.exceptions import RequestException, Timeout
 from testbeds.schema import (
     EvaluationResult,
     CommandExecutionResponse,
-    TestRunResponse, SWEbenchInstance,
+    TestRunResponse, SWEbenchInstance, TestStatus,
 )
 from testbeds.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL, RUN_TESTS
 from testbeds.swebench.log_parsers import parse_log
@@ -36,7 +36,7 @@ class TestbedClient:
         testbed_id: str,
         instance_id: str | None = None,
         instance: SWEbenchInstance | None = None,
-        dataset_name: str = "princeton-nlp/SWE-bench_Lite",
+        dataset_name: str | None = None,
         run_id: str = "default",
         base_url: str | None = None,
         api_key: str | None = None,
@@ -94,13 +94,13 @@ class TestbedClient:
 
     def check_health(self, timeout: int = 30):
         """Check testbed health status."""
-        url = f"{self.base_url}/testbeds/{self.testbed_id}/health"
-        headers = self._generate_headers()
-
-        response = requests.get(url, headers=headers, timeout=timeout)
-        response.raise_for_status()
-
-        return response.status_code == 200 and response.json().get("status") == "OK"
+        try:
+            response = self._request("GET", "health", operation_timeout=timeout)
+            return response.get("status") == "OK"
+        except TestbedError as e:
+            if hasattr(e, 'response') and e.response.status_code in [503, 504]:
+                return False
+            raise
 
     def _generate_traceparent(self):
         return f"00-{self.trace_id}-{self.current_span_id or uuid.uuid4().hex[:16]}-01"
@@ -206,7 +206,10 @@ class TestbedClient:
                 logger.warning(f"Testbed {self.testbed_id} not ready yet, will retry (Tried for {wait_time} seconds)")
                 time.sleep(1)
             except RequestException as e:
-                if e.response.status_code in [503, 504]:
+                if isinstance(e, requests.exceptions.ConnectionError):
+                    logger.warning(f"Failed to connect to testbed {self.testbed_id}, will retry... (Tried for {wait_time} seconds)")
+                    time.sleep(1)
+                elif e.response and e.response.status_code in [503, 504]:
                     logger.warning(f"Got response {e.response.status_code} indicating that the testbed {self.testbed_id} might not be ready yet, will retry...  (Tried for {wait_time} seconds)")
                     time.sleep(1)
                 else:
@@ -271,7 +274,7 @@ class TestbedClient:
         return hashlib.sha256(combined.encode()).hexdigest()
 
     def run_tests(
-        self, test_files: list[str] | None = None, patch: str | None = None
+        self, test_files: list[str] | None = None, patch: str | None = None, timeout: int = 1200
     ) -> TestRunResponse:
         logger.debug(f"Executing run_tests with test_files={test_files} and patch={patch}")
         
@@ -285,50 +288,67 @@ class TestbedClient:
         if patch:
             self.apply_patch(patch)
 
-        data = {"test_files": test_files} if test_files else {}
-        self._request("POST", "run-tests", json=data)
-        response = self.get_execution_status()
-
-        start_time = time.time()
-        while response.status == "running":
-            if time.time() - start_time > 1200:
-                raise TimeoutError("Execution timed out after 1200 seconds")
-            sleep(0.1)
+        test_results = []
+        for test_file in test_files:
+            data = {"test_files": [test_file]}
+            self._request("POST", "run-tests", json=data)
             response = self.get_execution_status()
 
-        if self.log_dir:
-            datetime_str = time.strftime("%Y%m%d-%H%M%S")
-            with open(f"{self.log_dir}/{datetime_str}_run_tests.log", "a") as f:
-                f.write(f"Response:\n{response.output}\n")
+            start_time = time.time()
+            while response.status == "running":
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Execution timed out after {timeout} seconds")
+                sleep(1.0)
+                response = self.get_execution_status()
 
-        log = response.output.split(f"{RUN_TESTS}\n")[-1]
-        test_result = parse_log(log, self.test_spec.repo)
+            if self.log_dir:
+                datetime_str = time.strftime("%Y%m%d-%H%M%S")
+                with open(f"{self.log_dir}/{datetime_str}_run_tests.log", "a") as f:
+                    f.write(f"Response:\n{response.output}\n")
+
+            log = response.output.split(f"{RUN_TESTS}\n")[-1]
+            test_result = parse_log(log, self.test_spec.repo)
+
+            if len(test_result) == 1 and test_result[0].status == TestStatus.ERROR:
+                test_result[0].file_path = test_file
+
+            filtered_test_result = []
+            for test in test_result:
+                if test.file_path != test_file:
+                    logger.info(f"Skipping test {test.method} in {test.file_path}. Expected {test_file}")
+                else:
+                    filtered_test_result.append(test)
+
+            test_results.extend(filtered_test_result)
+            logger.info(f"Finished running {test_file} tests. Got {len(filtered_test_result)} test results.")
 
         filtered_test_result = []
 
         statuses = {}
+        tests_by_file = {}
 
         ignored_tests = 0
-        for test in test_result:
+        for test in test_results:
             if test.method in self.ignored_tests.get(test.file_path, []):
                 ignored_tests += 1
                 continue
 
             filtered_test_result.append(test)
 
-            if test.status not in statuses:
-                statuses[test.status] = 0
+            # Track tests by file
+            if test.file_path not in tests_by_file:
+                tests_by_file[test.file_path] = {"count": 0, "statuses": {}}
+            
+            tests_by_file[test.file_path]["count"] += 1
+            if test.status not in tests_by_file[test.file_path]["statuses"]:
+                tests_by_file[test.file_path]["statuses"][test.status] = 0
+            tests_by_file[test.file_path]["statuses"][test.status] += 1
 
-            statuses[test.status] += 1
+        summary = [f"{file_path}: {stats['count']} tests. {stats['statuses']}" 
+                  for file_path, stats in tests_by_file.items()]
+        logger.info(f"Test summary by file: {' | '.join(summary)}")
 
-        if ignored_tests:
-            logger.info(
-                f"Did run {len(test_result)} tests, ignored {ignored_tests} tests. {statuses}"
-            )
-        else:
-            logger.info(f"Did run {len(test_result)} tests. {statuses}")
-
-        result = TestRunResponse(test_results=filtered_test_result, output=response.output)
+        result = TestRunResponse(test_results=filtered_test_result)
         
         if self.test_cache is not None:
             cache_key = self._generate_cache_key(test_files, patch)
@@ -372,6 +392,11 @@ class TestbedClient:
             while response.status == "running":
                 response = self.get_execution_status()
                 sleep(1)
+
+            if self.log_dir:
+                datetime_str = time.strftime("%Y%m%d-%H%M%S")
+                with open(f"{self.log_dir}/{datetime_str}_run_tests.log", "a") as f:
+                    f.write(f"Response:\n{response.output}\n")
 
             if "APPLY_PATCH_FAIL" in response.output:
                 logger.error("Failed to apply patch")

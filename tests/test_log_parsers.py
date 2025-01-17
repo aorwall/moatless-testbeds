@@ -119,13 +119,14 @@ def test_django_5():
 
 
 def test_django_formatting():
-    output = """test_main_module_without_file_is_not_resolved (utils_tests.test_autoreload.TestIterModulesAndFiles) ... ok
-test_module_without_spec (utils_tests.test_autoreload.TestIterModulesAndFiles) ... ok
-test_path_with_embedded_null_bytes (utils_tests.test_autoreload.TestIterModulesAndFiles) ... test_paths_are_pathlib_instances (utils_tests.test_autoreload.TestIterModulesAndFiles) ... ok
-test_weakref_in_sys_module (utils_tests.test_autoreload.TestIterModulesAndFiles)"""
+    output = """test_parsing_rfc1123 (utils_tests.test_http.HttpDateProcessingTests) ... ok
+    test_parsing_rfc850 (utils_tests.test_http.HttpDateProcessingTests) ... test_parsing_year_less_than_70 (utils_tests.test_http.HttpDateProcessingTests) ... ok
+    test_bad (utils_tests.test_http.IsSameDomainTests) ... ok"""
 
     result = parse_log(output, "django/django")
-    print(result)
+    assert len(result) == 4
+    # TODO
+
 
 
 def test_django_error():

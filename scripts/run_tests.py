@@ -6,7 +6,6 @@ import logging
 import sys
 import argparse
 
-from dotenv import load_dotenv
 from testbeds.sdk import TestbedSDK
 
 logging.basicConfig(

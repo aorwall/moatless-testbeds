@@ -4,6 +4,7 @@ import os
 import uuid
 import signal
 from functools import wraps
+import sys
 
 from flask import Flask, request, jsonify
 from opentelemetry.sdk.trace import TracerProvider
@@ -83,14 +84,11 @@ def create_app():
 
     @app.before_request
     def setup_timeout():
-        # Setup the timeout handler
         signal.signal(signal.SIGALRM, timeout_handler)
-        # Set the alarm
-        signal.alarm(30)  # 30 seconds timeout
+        signal.alarm(30)
 
     @app.after_request
     def clear_timeout(response):
-        # Clear the alarm
         signal.alarm(0)
         return response
 

@@ -82,7 +82,8 @@ class TestbedSDK:
     def create_client(self,
                       instance_id: str | None = None,
                       instance: dict | SWEbenchInstance | None = None,
-                      dataset_name: str = "princeton-nlp/SWE-bench_Lite",
+                      dataset_name: str | None = None,
+                      log_dir: str = None,
                       run_id: str = "default") -> TestbedClient:
         if not instance_id and not instance:
             raise ValueError("Either instance_id or instance must be provided")
@@ -97,6 +98,7 @@ class TestbedSDK:
             instance_id=instance_id,
             instance=instance,
             dataset_name=dataset_name,
+            log_dir=log_dir,
             run_id=run_id,
             base_url=self.base_url,
             api_key=self.api_key,

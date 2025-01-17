@@ -9,7 +9,9 @@ from typing import Optional
 
 import requests
 from kubernetes import client
+from werkzeug.exceptions import HTTPException, BadRequest, BadGateway
 
+from testbeds.exceptions import TestbedBadRequestError
 from testbeds.schema import (
     RunCommandsRequest,
     CommandExecutionResponse,
@@ -214,15 +216,35 @@ class TestbedClient:
 
     def get_execution_status(self) -> CommandExecutionResponse:
         try:
+            if not self.base_url:
+                raise BadGateway(
+                    description=f"No base URL configured for testbed {self.testbed_id}"
+                )
+            
             response = requests.get(f"{self.base_url}/exec")
             response.raise_for_status()
             response = CommandExecutionResponse.model_validate(response.json())
             if response.status == "completed":
                 logger.info(f"Command execution completed in testbed {self.testbed_id}")
             return response
-        except requests.RequestException as e:
+        
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"Connection error to testbed {self.testbed_id}. Error: {str(e)}")
+            status = self._read_testbed_status_detailed(self.testbed_id)
+            if status:
+                raise BadGateway(
+                    description=f"Connection refused to testbed {self.testbed_id}. Status: {status.model_dump_json(indent=2)}"
+                )
+            else:
+                raise BadGateway(
+                    description=f"Connection refused to testbed {self.testbed_id}. Unable to get current status."
+                )
+            
+        except requests.exceptions.RequestException as e:
             logger.error(f"Error during get_execution_status: {str(e)}")
-            raise e
+            raise BadGateway(
+                description=f"Request failed for testbed {self.testbed_id}: {str(e)}"
+            )
 
     def get_diff(self) -> str:
         """Get the current git diff output."""
@@ -261,7 +283,7 @@ class TestbedClient:
 
         if APPLY_PATCH_FAIL in response.output:
             logger.error(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.output}")
-            raise Exception(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.output}")
+            raise BadRequest(description=f"Failed to apply patch: {patch}.\n\nOutput\n:{response.output}")
 
         diff = self.get_diff()
         logger.debug(f"Diff after patch: \n{diff}")
