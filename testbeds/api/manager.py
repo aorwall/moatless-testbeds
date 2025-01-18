@@ -391,9 +391,9 @@ class TestbedManager:
         self, instance_id: str, user_id: str, run_id: str = "default"
     ) -> str:
         suffix = self._generate_kubernetes_like_suffix()
-        instance_name = instance_id.replace("__", "-")
-        user_prefix = user_id[:4].lower()
-        run_prefix = run_id[:4].lower()
+        instance_name = str(instance_id).replace("__", "-")
+        user_prefix = str(user_id)[:4].lower()
+        run_prefix = str(run_id)[:4].lower()
         return f"{instance_name}-{user_prefix}-{run_prefix}-{suffix}"
 
     def _config_map_name(self, instance_id: str) -> str:
