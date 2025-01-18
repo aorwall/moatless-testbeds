@@ -20,14 +20,6 @@ logging.basicConfig(
 )
 
 
-class WorkerTimeoutException(Exception):
-    pass
-
-
-def timeout_handler(signum, frame):
-    raise WorkerTimeoutException("Request timed out")
-
-
 def load_api_keys():
     api_keys_path = os.environ.get("API_KEYS_PATH", "/app/api_keys.json")
     try:

@@ -5,8 +5,13 @@ import os
 import logging
 import sys
 import argparse
+import uuid
+
+from dotenv import load_dotenv
 
 from testbeds.sdk import TestbedSDK
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO, 
@@ -30,13 +35,14 @@ def run_tests(instance_id: str, test_files: list[str] = None):
     logger.info(f"Starting evaluation for instance: {instance_id}")
 
     try:
+        run_id = uuid.uuid4().hex[:8]
         sdk = TestbedSDK(
             base_url=hostname,
             api_key=api_key
         )
 
         logger.info("Creating testbed instance...")
-        with sdk.create_client(instance_id=instance_id) as testbed:
+        with sdk.create_client(instance_id=instance_id, run_id=run_id) as testbed:
             logger.info(f"Created Testbed ID: {testbed.testbed_id}")
 
             # Use provided test files or fall back to test_patch files

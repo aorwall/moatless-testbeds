@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "moatless-testbeds"
-version = "0.0.12"
+version = "0.0.13"
 description = "Run testbeds as isolated pods in a Kubernetes cluster"
 authors = ["Albert Örwall <albert@moatless.ai>"]
 repository = "https://github.com/aorwall/moatless-testbeds"
@@ -12,6 +12,7 @@ python = "^3.9"
 requests = "^2.32.3"
 pydantic = "^2.8.2"
 datasets = "^3.0.2"
+python-dotenv = "^1.0.1"
 
 [build-system]
 requires = ["poetry-core"]

@@ -221,7 +221,7 @@ class TestbedManager:
                 time.sleep(0.1)
 
             logger.info(
-                f"create_testbed(user: {user_id}, instance_id: {instance_id}, testbed_id: {testbed_id}) Job and Service created in namespace {self.namespace}."
+                f"create_testbed(user: {user_id}, run_id: {run_id}, instance_id: {instance_id}, testbed_id: {testbed_id}) Job and Service created in namespace {self.namespace}."
             )
 
             return TestbedSummary(
@@ -265,9 +265,9 @@ class TestbedManager:
         # Only check service if not in cluster
         service = None if self.in_cluster else self._get_service(testbed_id)
 
-        if not job or job.metadata.labels.get("user-id") != user_id or job.metadata.labels.get("run-id") != run_id:
+        if not job or job.metadata.labels.get("user-id") != user_id:
             logger.warning(
-                f"Testbed {testbed_id} not found or not owned by user {user_id} with run_id {run_id}"
+                f"Testbed {testbed_id} not found or not owned by user {user_id}"
             )
             raise TestbedNotFoundError(f"Testbed {testbed_id} not found")
 
