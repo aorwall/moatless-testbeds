@@ -24,6 +24,8 @@ from testbeds.swebench.test_spec import TestSpec
 from testbeds.swebench.utils import load_swebench_instance
 
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "testbeds")
+SWEBENCH_DOCKER_REGISTRY = os.getenv("SWEBENCH_DOCKER_REGISTRY", "swebench")
+SWEBENCH_IMAGE_PREFIX = os.getenv("SWEBENCH_IMAGE_PREFIX", "sweb.eval.x86_64.")
 
 logger = logging.getLogger(__name__)
 logging.getLogger("azure").setLevel(logging.WARNING)
@@ -420,19 +422,20 @@ class TestbedManager:
             limit_memory = "1Gi"
             request_memory = "600Mi"
 
+        # Ensure all values are strings
         context = {
-            "job_name": testbed_id,
-            "namespace": self.namespace,
-            "instance_id": instance_id,
-            "testbed_id": testbed_id,
-            "user_id": user_id,
-            "run_id": run_id,
-            "testbed_image": f"moatless.azurecr.io/sweb.eval.x86_64.{instance_id}",
+            "job_name": str(testbed_id),
+            "namespace": str(self.namespace),
+            "instance_id": str(instance_id),
+            "testbed_id": str(testbed_id),
+            "user_id": str(user_id),
+            "run_id": str(run_id),
+            "testbed_image": f"{SWEBENCH_DOCKER_REGISTRY}/{SWEBENCH_IMAGE_PREFIX}{instance_id}",
             "sidecar_image": "aorwall/moatless-testbed-sidecar:latest",
-            "limit_cpu": limit_cpu,
-            "limit_memory": limit_memory,
-            "request_cpu": request_cpu,
-            "request_memory": request_memory,
+            "limit_cpu": str(limit_cpu),
+            "limit_memory": str(limit_memory), 
+            "request_cpu": str(request_cpu),
+            "request_memory": str(request_memory),
             "init_env_commands": test_spec.env_script_list,
         }
         manifest_yaml = self.job_template.render(context)

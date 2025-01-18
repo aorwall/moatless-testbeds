@@ -78,9 +78,10 @@ pip install moatless-testbeds
 # Set the Kubernetes namespace if not default
 # export KUBERNETES_NAMESPACE=testbeds  # default: testbeds
 
-# Optional: Set environment variables only if using custom images
-# If not set, will use default public images
-# export DOCKER_REGISTRY=your-registry  # default: aorwall
+# Optional: Configure custom container registry and image prefix
+# If not set, will use default values for SWE-bench images
+# export SWEBENCH_DOCKER_REGISTRY=your-registry  # default: swebench
+# export SWEBENCH_IMAGE_PREFIX=your-prefix      # default: sweb.eval.x86_64.
 
 # Optional: Enable direct command execution in testbeds
 # Warning: This allows arbitrary command execution and should be used with caution
@@ -91,6 +92,22 @@ pip install moatless-testbeds
 ```
 
 The API will be available at `http://<EXTERNAL-IP>`.
+
+### Container Registry Configuration
+
+The testbed images are pulled from a container registry that can be configured using two environment variables:
+
+- `SWEBENCH_DOCKER_REGISTRY`: The base registry URL (default: swebench)
+- `SWEBENCH_IMAGE_PREFIX`: The prefix for testbed images (default: sweb.eval.x86_64.)
+
+By default, the configuration is set up to use SWE-bench images. If you want to use your own registry:
+```bash
+export SWEBENCH_DOCKER_REGISTRY=my-registry.azurecr.io
+export SWEBENCH_IMAGE_PREFIX=custom.eval.
+```
+
+This will result in testbed images being pulled from:
+`my-registry.azurecr.io/custom.eval.<instance-id>`
 
 ## Run evaluation
 
