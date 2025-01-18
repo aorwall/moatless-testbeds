@@ -74,39 +74,12 @@ def create_app():
 
     testbed_manager = TestbedManager()
 
-    @app.before_request
-    def setup_timeout():
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(30)
-
-    @app.after_request
-    def clear_timeout(response):
-        signal.alarm(0)
-        return response
-
-    @app.errorhandler(WorkerTimeoutException)
-    def handle_timeout_error(e):
-        logger.error("Request timed out", exc_info=True)
-        return jsonify({
-            "error": "Request timed out",
-            "code": 504,
-            "reference_code": str(uuid.uuid4())
-        }), 504
-
     @app.errorhandler(Exception)
     def handle_exception(e):
         # Clear any pending alarms
         signal.alarm(0)
         
         reference_code = str(uuid.uuid4())
-        
-        if isinstance(e, WorkerTimeoutException):
-            logger.error(f"Request timed out. Reference code: {reference_code}", exc_info=True)
-            return jsonify({
-                "error": "Request timed out",
-                "reference_code": reference_code,
-                "code": 504
-            }), 504
         
         if isinstance(e, HTTPException):
             logger.exception(f"An HTTP error occurred. Reference code: {reference_code}")
