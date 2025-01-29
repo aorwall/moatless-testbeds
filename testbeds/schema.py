@@ -27,6 +27,9 @@ class SWEbenchInstance(BaseModel):
     environment_setup_commit: str = Field(
         ..., description="Commit hash for environment setup"
     )
+    dataset: Optional[str] = Field(
+        None, description="Dataset name"
+    )
 
     @classmethod
     @model_validator(mode="before")

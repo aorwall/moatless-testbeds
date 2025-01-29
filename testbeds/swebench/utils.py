@@ -107,6 +107,7 @@ def load_swebench_dataset(
 
         instances.extend(download_instances("princeton-nlp/SWE-bench_Lite"))
         instances.extend(download_instances("princeton-nlp/SWE-bench_Verified"))
+        instances.extend(download_instances("SWE-Gym/SWE-Gym", "train"))
         _SWEBENCH_DATASET = instances
     else:
         instances = download_instances(name, split)
@@ -130,7 +131,7 @@ def download_instances(name: str, split: str = "test"):
         if "environment_setup_commit" not in instance:
             instance["environment_setup_commit"] = ""
 
-        instances.append(SWEbenchInstance(**instance))
+        instances.append(SWEbenchInstance(**instance, dataset=name))
     return instances
 
 def get_first_idx(charlist):

@@ -27,6 +27,9 @@ KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "testbeds")
 SWEBENCH_DOCKER_REGISTRY = os.getenv("SWEBENCH_DOCKER_REGISTRY", "swebench")
 SWEBENCH_IMAGE_PREFIX = os.getenv("SWEBENCH_IMAGE_PREFIX", "sweb.eval.x86_64.")
 
+SWE_GYM_DOCKER_REGISTRY = os.getenv("SWE_GYM_DOCKER_REGISTRY", "xingyaoww")
+SWE_GYM_IMAGE_PREFIX = os.getenv("SWE_GYM_IMAGE_PREFIX", "sweb.eval.x86_64.")
+
 logger = logging.getLogger(__name__)
 logging.getLogger("azure").setLevel(logging.WARNING)
 
@@ -422,6 +425,15 @@ class TestbedManager:
             limit_memory = "1Gi"
             request_memory = "600Mi"
 
+        if instance.dataset == "SWE-Gym/SWE-Gym":
+            instance_id = instance_id.replace("__", "_s_")
+            testbed_image = f"{SWE_GYM_DOCKER_REGISTRY}/{SWE_GYM_IMAGE_PREFIX}{instance_id}"
+        else:
+            if SWEBENCH_DOCKER_REGISTRY == "swebench":
+                instance_id = instance_id.replace("__", "_1776_")
+
+            testbed_image = f"{SWEBENCH_DOCKER_REGISTRY}/{SWEBENCH_IMAGE_PREFIX}{instance_id}"
+
         # Ensure all values are strings
         context = {
             "job_name": str(testbed_id),
@@ -430,7 +442,7 @@ class TestbedManager:
             "testbed_id": str(testbed_id),
             "user_id": str(user_id),
             "run_id": str(run_id),
-            "testbed_image": f"{SWEBENCH_DOCKER_REGISTRY}/{SWEBENCH_IMAGE_PREFIX}{instance_id}",
+            "testbed_image": testbed_image,
             "sidecar_image": "aorwall/moatless-testbed-sidecar:latest",
             "limit_cpu": str(limit_cpu),
             "limit_memory": str(limit_memory), 
