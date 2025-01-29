@@ -118,12 +118,17 @@ def download_instances(name: str, split: str = "test"):
 
     instances = []
     for instance in dataset:
-        if "FAIL_TO_PASS" in instance and isinstance(instance["FAIL_TO_PASS"], str):
-            instance["fail_to_pass"] = eval(instance["FAIL_TO_PASS"])
+        # Convert uppercase to lowercase field names and handle string evaluation
+        if "FAIL_TO_PASS" in instance:
+            instance["fail_to_pass"] = eval(instance["FAIL_TO_PASS"]) if isinstance(instance["FAIL_TO_PASS"], str) else instance["FAIL_TO_PASS"]
             del instance["FAIL_TO_PASS"]
-        if "PASS_TO_PASS" in instance and isinstance(instance["PASS_TO_PASS"], str):
-            instance["pass_to_pass"] = eval(instance["PASS_TO_PASS"])
+        if "PASS_TO_PASS" in instance:
+            instance["pass_to_pass"] = eval(instance["PASS_TO_PASS"]) if isinstance(instance["PASS_TO_PASS"], str) else instance["PASS_TO_PASS"]
             del instance["PASS_TO_PASS"]
+
+        # Add environment_setup_commit if missing (for SWE-Gym compatibility)
+        if "environment_setup_commit" not in instance:
+            instance["environment_setup_commit"] = ""
 
         instances.append(SWEbenchInstance(**instance))
     return instances
@@ -277,3 +282,18 @@ def str2bool(v):
         return False
     else:
         raise ArgumentTypeError("Boolean value expected.")
+
+
+if __name__ == "__main__":
+    # try with SWE-bench-Verified
+    print(load_swebench_instance(
+        instance_id="astropy__astropy-12907", 
+        name="princeton-nlp/SWE-bench_Verified",
+        split="test"
+    ))
+    # try with SWE-Gym
+    print(load_swebench_instance(
+        instance_id="getmoto__moto-5752", 
+        name="SWE-Gym/SWE-Gym",
+        split="train"
+    ))
