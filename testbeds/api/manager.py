@@ -22,13 +22,10 @@ from testbeds.schema import (
 )
 from testbeds.swebench.test_spec import TestSpec
 from testbeds.swebench.utils import load_swebench_instance
+from testbeds.swebench.constants import SWEBENCH_DOCKER_REGISTRY, SWEBENCH_IMAGE_PREFIX
+from testbeds.swegym.constants import SWE_GYM_DOCKER_REGISTRY, SWE_GYM_IMAGE_PREFIX
 
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "testbeds")
-SWEBENCH_DOCKER_REGISTRY = os.getenv("SWEBENCH_DOCKER_REGISTRY", "swebench")
-SWEBENCH_IMAGE_PREFIX = os.getenv("SWEBENCH_IMAGE_PREFIX", "sweb.eval.x86_64.")
-
-SWE_GYM_DOCKER_REGISTRY = os.getenv("SWE_GYM_DOCKER_REGISTRY", "xingyaoww")
-SWE_GYM_IMAGE_PREFIX = os.getenv("SWE_GYM_IMAGE_PREFIX", "sweb.eval.x86_64.")
 
 logger = logging.getLogger(__name__)
 logging.getLogger("azure").setLevel(logging.WARNING)
