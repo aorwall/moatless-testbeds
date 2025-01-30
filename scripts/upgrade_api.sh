@@ -12,7 +12,7 @@ TIMESTAMP=$(date +%s)
 NAMESPACE=${KUBERNETES_NAMESPACE:-testbed-dev}
 
 # Prepare dataset before building
-./scripts/prepare_docker_build.sh
+./scripts/download_dataset.py
 
 # Build and push the Docker image
 docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} -f docker/Dockerfile.api .

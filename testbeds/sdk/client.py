@@ -61,8 +61,16 @@ class TestbedClient:
         self.headers = {"X-API-Key": api_key}
         self.api_key = api_key
 
+        self.trace_id = uuid.uuid4().hex[:32]
+        self.current_span_id = None
+
         if not instance:
-            self.instance = load_swebench_instance(instance_id, name=dataset_name)
+            try:
+                self.instance = self._load_instance(instance_id)
+            except TestbedError:
+                # Fall back to local loading if API fails
+                logger.warning(f"Falling back to local instance loading for {instance_id}")
+                self.instance = load_swebench_instance(instance_id, name=dataset_name)
         else:
             self.instance = instance
 
@@ -78,9 +86,6 @@ class TestbedClient:
                 os.makedirs(self.log_dir)
         else:
             self.log_dir = None
-
-        self.trace_id = uuid.uuid4().hex[:32]
-        self.current_span_id = None
 
         self.test_cache = test_cache
         self._current_patch = None
@@ -441,3 +446,14 @@ class TestbedClient:
 
     def destroy(self):
         self._request("DELETE")
+
+    def _load_instance(self, instance_id: str) -> SWEbenchInstance:
+        """Load a SWEbench instance from the API."""
+        try:
+            url = f"{self.base_url}/instances/{instance_id}"
+            response = requests.get(url, headers=self._generate_headers())
+            response.raise_for_status()
+            return SWEbenchInstance.model_validate(response.json())
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to load instance {instance_id} from API: {e}")
+            raise TestbedError(f"Failed to load instance {instance_id}") from e

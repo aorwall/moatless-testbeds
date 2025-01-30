@@ -6,7 +6,7 @@ COPY requirements.txt /app/
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY swebench_dataset.json /app/swebench_dataset.json
+COPY instances /app/instances/
 
 COPY testbeds /app/testbeds/
 

@@ -68,7 +68,10 @@ def load_swebench_instance(
         with instance_path.open("r", encoding="utf-8") as f:
             instance_data = json.load(f)
             return SWEbenchInstance(**instance_data)
+    
+    logger.info(f"Instance {instance_id} not found in local file, trying to load from API")
 
+    # Fallback to loading from dataset
     instances = load_swebench_dataset(name, split)
 
     for instance in instances:

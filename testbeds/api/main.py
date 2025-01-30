@@ -303,6 +303,20 @@ def create_app():
         logger.exception(f"An unexpected error occurred. Reference code: {reference_code}")
         return jsonify({"error": "An unexpected error occurred", "reference_code": reference_code}), 500
 
+    @app.route("/instances/<instance_id>", methods=["GET"])
+    @validate_api_key
+    def get_instance(instance_id: str, user_id: str):
+        """Get a SWEbench instance by ID."""
+        try:
+            from testbeds.swebench.utils import load_swebench_instance
+            instance = load_swebench_instance(instance_id)
+            if not instance:
+                return jsonify({"error": f"Instance {instance_id} not found"}), 404
+            return jsonify(instance.model_dump()), 200
+        except Exception as e:
+            logger.exception(f"Error getting instance {instance_id}")
+            return jsonify({"error": str(e)}), 500
+
     return app
 
 

@@ -426,13 +426,15 @@ class TestbedManager:
             request_memory = "600Mi"
 
         if instance.dataset == "SWE-Gym/SWE-Gym":
-            instance_id = instance_id.replace("__", "_s_")
-            testbed_image = f"{SWE_GYM_DOCKER_REGISTRY}/{SWE_GYM_IMAGE_PREFIX}{instance_id}"
+            image_instance_id = instance_id.replace("__", "_s_")
+            testbed_image = f"{SWE_GYM_DOCKER_REGISTRY}/{SWE_GYM_IMAGE_PREFIX}{image_instance_id}"
         else:
             if SWEBENCH_DOCKER_REGISTRY == "swebench":
-                instance_id = instance_id.replace("__", "_1776_")
+                image_instance_id = instance_id.replace("__", "_1776_")
+            else:
+                image_instance_id = instance_id
 
-            testbed_image = f"{SWEBENCH_DOCKER_REGISTRY}/{SWEBENCH_IMAGE_PREFIX}{instance_id}"
+            testbed_image = f"{SWEBENCH_DOCKER_REGISTRY}/{SWEBENCH_IMAGE_PREFIX}{image_instance_id}"
 
         # Ensure all values are strings
         context = {

@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 def parse_log(log: str, repo: str) -> list[TestResult]:
-    log_parser = MAP_REPO_TO_PARSER[repo]
+    log_parser = MAP_REPO_TO_PARSER.get(repo, parse_log_pytest)
     test_results = log_parser(log)
 
     if not test_results:
