@@ -11,6 +11,9 @@ IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
 TIMESTAMP=$(date +%s)
 NAMESPACE=${KUBERNETES_NAMESPACE:-testbed-dev}
 
+# Prepare dataset before building
+./scripts/prepare_docker_build.sh
+
 # Build and push the Docker image
 docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} -f docker/Dockerfile.api .
 docker push ${DOCKER_IMAGE}:${IMAGE_TAG}

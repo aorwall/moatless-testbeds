@@ -6,7 +6,12 @@ echo "Building API Docker image: ${API_DOCKER_IMAGE}"
 
 set -e
 
-python scripts/save_swebench_dataset.py
+# Check if dataset exists, download if needed
+echo "Checking SWE-bench dataset..."
+if ! python3 scripts/download_dataset.py; then
+    echo "Error: Failed to prepare dataset"
+    exit 1
+fi
 
 docker build -t ${API_DOCKER_IMAGE} -f docker/Dockerfile.api .
 docker push ${API_DOCKER_IMAGE}

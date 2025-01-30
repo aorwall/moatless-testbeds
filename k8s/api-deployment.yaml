@@ -22,9 +22,9 @@ spec:
         - containerPort: 8000
         resources:
           requests:
-            memory: "300Mi"
-          limits:
             memory: "1Gi"
+          limits:
+            memory: "2Gi"
         volumeMounts:
         - name: api-keys
           mountPath: /app/api_keys.json

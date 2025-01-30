@@ -80,7 +80,7 @@ def load_swebench_instance(
 
 
 def load_swebench_dataset(
-    name: str | None = None, split: str = "test"
+    name: str | None = None, split: str | None = None
 ) -> list[SWEbenchInstance]:
     """
     Load SWE-bench dataset from memory if available (only for princeton-nlp/SWE-bench),
@@ -92,21 +92,19 @@ def load_swebench_dataset(
         return _SWEBENCH_DATASET
     instances = []
 
+    local_file = Path("/app/swebench_dataset.json")
+    if local_file.exists():
+        logger.info(f"Loading dataset from local file: {local_file.absolute()}")
+        with local_file.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        _SWEBENCH_DATASET = [SWEbenchInstance(**instance) for instance in data]
+        return _SWEBENCH_DATASET
+    else:
+        logger.info(f"Dataset not found at {local_file.absolute()}")
+
     if not name:
-
-        # Update the local file path to use /app directory
-        local_file = Path("/app/swebench_dataset.json")
-        if local_file.exists():
-            logger.info(f"Loading dataset from local file: {local_file.absolute()}")
-            with local_file.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            _SWEBENCH_DATASET = [SWEbenchInstance(**instance) for instance in data]
-            return _SWEBENCH_DATASET
-
-        # TODO: Load both Lite and Verified as default
-
-        instances.extend(download_instances("princeton-nlp/SWE-bench_Lite"))
-        instances.extend(download_instances("princeton-nlp/SWE-bench_Verified"))
+        instances.extend(download_instances("princeton-nlp/SWE-bench_Lite", "test"))
+        instances.extend(download_instances("princeton-nlp/SWE-bench_Verified", "test"))
         instances.extend(download_instances("SWE-Gym/SWE-Gym", "train"))
         _SWEBENCH_DATASET = instances
     else:
@@ -115,6 +113,7 @@ def load_swebench_dataset(
     return instances
 
 def download_instances(name: str, split: str = "test"):
+    logger.info(f"Downloading instances from {name} split {split}")
     dataset = cast(Dataset, load_dataset(name, split=split))
 
     instances = []
