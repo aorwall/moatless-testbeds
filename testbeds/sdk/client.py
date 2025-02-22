@@ -26,70 +26,12 @@ from testbeds.sdk.exceptions import (
     TestbedConnectionError,
     TestbedTimeoutError,
 )
+from testbeds.sdk.base_client import BaseTestbedClient
 
 logger = logging.getLogger(__name__)
 
 
-class TestbedClient:
-    def __init__(
-        self,
-        testbed_id: str,
-        instance_id: str | None = None,
-        instance: SWEbenchInstance | None = None,
-        dataset_name: str | None = None,
-        run_id: str = "default",
-        base_url: str | None = None,
-        api_key: str | None = None,
-        log_dir: str | None = None,
-        ignored_tests: dict[str, list[str]] = {},
-        test_cache: dict | None = None,
-    ):
-        assert testbed_id, "Testbed ID is required"
-
-        if not instance_id and not instance:
-            raise ValueError("Either instance_id or instance must be set")
-
-        base_url = base_url or os.getenv("TESTBED_BASE_URL")
-        api_key = api_key or os.getenv("TESTBED_API_KEY")
-        assert base_url, "TESTBED_BASE_URL environment variable must be set"
-        assert api_key, "TESTBED_API_KEY environment variable must be set"
-        logger.info(f"Initializing Testbed SDK with base URL {base_url}")
-
-        base_url = base_url.rstrip("/")
-
-        self.base_url = base_url
-        self.headers = {"X-API-Key": api_key}
-        self.api_key = api_key
-
-        self.trace_id = uuid.uuid4().hex[:32]
-        self.current_span_id = None
-
-        if not instance:
-            try:
-                self.instance = self._load_instance(instance_id)
-            except TestbedError:
-                # Fall back to local loading if API fails
-                logger.warning(f"Falling back to local instance loading for {instance_id}")
-                self.instance = load_swebench_instance(instance_id, name=dataset_name)
-        else:
-            self.instance = instance
-
-        self.test_spec = TestSpec.from_instance(self.instance)
-
-        self.testbed_id = testbed_id
-        self.run_id = run_id
-        self.ignored_tests = ignored_tests
-
-        if log_dir:
-            self.log_dir = f"{log_dir}/{testbed_id}" if log_dir else None
-            if not os.path.exists(self.log_dir):
-                os.makedirs(self.log_dir)
-        else:
-            self.log_dir = None
-
-        self.test_cache = test_cache
-        self._current_patch = None
-
+class TestbedClient(BaseTestbedClient):
     def __enter__(self):
         self.wait_until_ready()
         return self
@@ -126,10 +68,7 @@ class TestbedClient:
         operation_timeout: int = 300,
         **kwargs,
     ) -> Dict[str, Any]:
-        url = f"{self.base_url}/testbeds/{self.testbed_id}"
-        if endpoint:
-            url += f"/{endpoint}"
-
+        url = self._get_url(endpoint)
         headers = self._generate_headers()
 
         retries = 0
@@ -204,7 +143,7 @@ class TestbedClient:
                 if self.check_health():
                     logger.debug(f"Testbed {self.testbed_id} is healthy and ready")
                     return True
-                
+
                 logger.debug(f"Testbed {self.testbed_id} not ready yet, waiting...")
                 time.sleep(1)
             except Timeout as e:
@@ -223,7 +162,7 @@ class TestbedClient:
             except Exception as e:
                 logger.warning(f"Health check failed: {str(e)}, retrying... (Tried for {wait_time} seconds)")
                 time.sleep(1)
-                
+
         raise TimeoutError(f"Testbed {self.testbed_id} not ready within {wait_time} seconds")
 
     def status(self):
@@ -274,7 +213,7 @@ class TestbedClient:
             key_parts.append(patch)
         if not key_parts:
             key_parts.append("all_tests_no_patch")
-            
+
         combined = "|".join(key_parts)
         return hashlib.sha256(combined.encode()).hexdigest()
 
@@ -282,7 +221,7 @@ class TestbedClient:
         self, test_files: list[str] | None = None, patch: str | None = None, timeout: int = 1200
     ) -> TestRunResponse:
         logger.debug(f"Executing run_tests with test_files={test_files} and patch={patch}")
-        
+
         if self.test_cache is not None:
             cache_key = self._generate_cache_key(test_files, patch)
             cached_result = self.test_cache.get(cache_key)
@@ -343,22 +282,22 @@ class TestbedClient:
             # Track tests by file
             if test.file_path not in tests_by_file:
                 tests_by_file[test.file_path] = {"count": 0, "statuses": {}}
-            
+
             tests_by_file[test.file_path]["count"] += 1
             if test.status not in tests_by_file[test.file_path]["statuses"]:
                 tests_by_file[test.file_path]["statuses"][test.status] = 0
             tests_by_file[test.file_path]["statuses"][test.status] += 1
 
-        summary = [f"{file_path}: {stats['count']} tests. {stats['statuses']}" 
+        summary = [f"{file_path}: {stats['count']} tests. {stats['statuses']}"
                   for file_path, stats in tests_by_file.items()]
         logger.info(f"Test summary by file: {' | '.join(summary)}")
 
         result = TestRunResponse(test_results=filtered_test_result)
-        
+
         if self.test_cache is not None:
             cache_key = self._generate_cache_key(test_files, patch)
             self.test_cache[cache_key] = result
-            
+
         return result
 
     def run_evaluation(

@@ -1,9 +1,14 @@
 from enum import Enum
 from typing import Optional, Literal, Dict, List, Any
+import json
+from datetime import datetime, timezone
+import logging
 
 from pydantic import BaseModel, Field, model_validator
 
 from testbeds.swebench.constants import ResolvedStatus
+
+logger = logging.getLogger(__name__)
 
 
 class SWEbenchInstance(BaseModel):
@@ -31,17 +36,38 @@ class SWEbenchInstance(BaseModel):
         None, description="Dataset name"
     )
 
+    @model_validator(mode='before')
     @classmethod
-    @model_validator(mode="before")
-    def validate_test_lists(cls, obj: Any):
-        print("validate_test_lists")
-        print(obj)
-        if isinstance(obj, dict):
-            if "FAIL_TO_PASS" in obj and isinstance(obj["FAIL_TO_PASS"], str):
-                obj["fail_to_pass"] = eval(obj["FAIL_TO_PASS"])
-            if "PASS_TO_PASS" in obj and isinstance(obj["PASS_TO_PASS"], str):
-                obj["pass_to_pass"] = eval(obj["PASS_TO_PASS"])
-        return obj
+    def validate_and_transform(cls, data: Any) -> Dict[str, Any]:
+        """Pre-process and validate instance data."""
+        if not isinstance(data, dict):
+            return data
+        
+        if 'version' not in data:
+            raise ValueError(f"Version is required, but not found in the instance data with keys: {data.keys()}")
+
+        # Handle string list fields
+        for field in ['fail_to_pass', 'pass_to_pass']:
+            if isinstance(data.get(field), str):
+                try:
+                    data[field] = json.loads(data[field])
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Could not parse {field} as JSON list: {e}")
+                    # Try eval as fallback since the strings look like Python lists
+                    try:
+                        data[field] = eval(data[field])
+                    except Exception as e:
+                        logger.error(f"Failed to parse {field} with eval: {e}")
+
+        # Set default values for required fields
+        if 'created_at' not in data:
+            data['created_at'] = datetime.now(timezone.utc).isoformat()
+        
+        if 'environment_setup_commit' not in data:
+            data['environment_setup_commit'] = data.get('base_commit', '')
+
+
+        return data
 
 
 class Prediction(BaseModel):

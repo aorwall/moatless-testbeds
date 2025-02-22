@@ -73,6 +73,11 @@ class TestSpec:
     def __post_init__(self):
         self.env_name = "testbed"
         self.repo_directory = f"/{self.env_name}"
+        if self.repo not in MAP_REPO_VERSION_TO_SPECS:
+            raise ValueError(f"Repository {self.repo} not found in MAP_REPO_VERSION_TO_SPECS {MAP_REPO_VERSION_TO_SPECS.keys()}")
+        if self.version not in MAP_REPO_VERSION_TO_SPECS[self.repo]:
+            raise ValueError(f"Version {self.version} not found in MAP_REPO_VERSION_TO_SPECS[{self.repo}] {MAP_REPO_VERSION_TO_SPECS[self.repo].keys()}")
+        
         self.specs = MAP_REPO_VERSION_TO_SPECS[self.repo][self.version]
 
     @classmethod

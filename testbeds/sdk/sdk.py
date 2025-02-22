@@ -1,8 +1,12 @@
+import json
 import logging
 import os
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+from datetime import datetime
 
 import requests
+import aiohttp
+import asyncio
 
 from testbeds.schema import (
     TestbedSummary,
@@ -16,6 +20,7 @@ from testbeds.sdk.exceptions import (
     TestbedTimeoutError,
     TestbedValidationError,
 )
+from testbeds.sdk.async_client import AsyncTestbedClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,37 +37,6 @@ class TestbedSDK:
         self.headers = {"X-API-Key": self.api_key, "Content-Type": "application/json"}
         self.enable_cache = enable_cache
         self._test_cache = {} if enable_cache else None
-
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
-        url = f"{self.base_url}/{endpoint}"
-        try:
-            response = requests.request(method, url, headers=self.headers, **kwargs)
-            response.raise_for_status()
-            return response
-            
-        except requests.exceptions.ConnectionError as e:
-            raise TestbedConnectionError(f"Failed to connect to testbed: {str(e)}") from e
-        except requests.exceptions.Timeout as e:
-            raise TestbedTimeoutError(f"Request timed out: {str(e)}") from e
-        except requests.exceptions.HTTPError as e:
-            error_code = None
-            details = {}
-
-            try:
-                error_data = e.response.json()
-                error_message = error_data.get('message')
-                error_code = error_data.get('error')
-                details = error_data
-            except (ValueError, AttributeError):
-                error_message = e.response.text or str(e)
-
-            if 400 <= e.response.status_code < 500:
-                if e.response.status_code == 401:
-                    raise TestbedAuthenticationError(error_message, error_code, details) from e
-            raise TestbedError(error_message, error_code, details) from e
-                
-        except Exception as e:
-            raise TestbedError(f"Unexpected error: {str(e)}") from e
 
     def list_testbeds(self) -> List[TestbedSummary]:
         response = self._make_request("GET", "testbeds")
@@ -105,6 +79,36 @@ class TestbedSDK:
             test_cache=self._test_cache if self.enable_cache else None,
         )
 
+    async def create_async_client(
+        self,
+        instance_id: str | None = None,
+        instance: dict | SWEbenchInstance | None = None,
+        dataset_name: str | None = None,
+        log_dir: str = None,
+        run_id: str = "default"
+    ) -> AsyncTestbedClient:
+        """Create an async testbed client."""
+        logger.info(f"Creating async testbed client for instance {instance_id} with run_id {run_id}")
+
+        if not instance_id and not instance:
+            raise ValueError("Either instance_id or instance must be provided")
+
+        if instance and isinstance(instance, dict):
+            instance = SWEbenchInstance.model_validate(instance)
+
+        instance_id = instance_id or instance.instance_id
+        
+        client = AsyncTestbedClient(
+            instance_id=instance_id,
+            log_dir=log_dir,
+            run_id=run_id,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            test_cache=self._test_cache if self.enable_cache else None,
+        )
+        
+        return client
+
     def get_testbed(
         self, testbed_id: str, run_id: str = "default"
     ) -> Optional[TestbedDetailed]:
@@ -128,6 +132,81 @@ class TestbedSDK:
 
     def cleanup_user_resources(self):
         self._make_request("POST", "cleanup")
+
+
+    def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        url = f"{self.base_url}/{endpoint}"
+        try:
+            response = requests.request(method, url, headers=self.headers, **kwargs)
+            response.raise_for_status()
+            return response
+            
+        except requests.exceptions.ConnectionError as e:
+            raise TestbedConnectionError(f"Failed to connect to testbed: {str(e)}") from e
+        except requests.exceptions.Timeout as e:
+            raise TestbedTimeoutError(f"Request timed out: {str(e)}") from e
+        except requests.exceptions.HTTPError as e:
+            error_code = None
+            details = {}
+
+            try:
+                error_data = e.response.json()
+                error_message = error_data.get('message')
+                error_code = error_data.get('error')
+                details = error_data
+            except (ValueError, AttributeError):
+                error_message = e.response.text or str(e)
+
+            if 400 <= e.response.status_code < 500:
+                if e.response.status_code == 401:
+                    raise TestbedAuthenticationError(error_message, error_code, details) from e
+            raise TestbedError(error_message, error_code, details) from e
+                
+        except Exception as e:
+            raise TestbedError(f"Unexpected error: {str(e)}") from e
+
+
+    async def _make_async_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+        url = f"{self.base_url}/{endpoint}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.request(method, url, headers=self.headers, **kwargs) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            
+        except aiohttp.ClientConnectionError as e:
+            raise TestbedConnectionError(f"Failed to connect to testbed: {str(e)}") from e
+        except asyncio.TimeoutError as e:
+            raise TestbedTimeoutError(f"Request timed out: {str(e)}") from e
+        except aiohttp.ClientResponseError as e:
+            error_code = None
+            details = {}
+
+            try:
+                error_data = await response.json()
+                error_message = error_data.get('message')
+                error_code = error_data.get('error')
+                details = error_data
+            except:
+                error_message = await response.text() or str(e)
+
+            if 400 <= e.status < 500:
+                if e.status == 401:
+                    raise TestbedAuthenticationError(error_message, error_code, details) from e
+            raise TestbedError(error_message, error_code, details) from e
+                
+        except Exception as e:
+            raise TestbedError(f"Unexpected error: {str(e)}") from e
+
+    async def get_or_create_testbed_async(
+        self, instance_id: str, run_id: str = "default"
+    ) -> TestbedSummary:
+        if not instance_id:
+            raise TestbedValidationError("instance_id is required")
+
+        data = {"instance_id": instance_id, "run_id": run_id}
+        response = await self._make_async_request("POST", "testbeds", json=data)
+        return TestbedSummary(**response)
 
     def clear_cache(self):
         """Clear the test results cache"""

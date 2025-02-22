@@ -33,8 +33,6 @@ from argparse import ArgumentTypeError
 from pathlib import Path
 from typing import cast, Optional
 
-from datasets import Dataset, load_dataset
-
 from testbeds.schema import SWEbenchInstance
 from testbeds.swebench.constants import (
     NON_TEST_EXTS,
@@ -117,6 +115,9 @@ def load_swebench_dataset(
 
 def download_instances(name: str, split: str = "test"):
     logger.info(f"Downloading instances from {name} split {split}")
+
+    from datasets import Dataset, load_dataset
+
     dataset = cast(Dataset, load_dataset(name, split=split))
 
     instances = []

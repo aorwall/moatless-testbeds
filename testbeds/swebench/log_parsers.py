@@ -39,10 +39,9 @@ def parse_log(log: str, repo: str) -> list[TestResult]:
     test_results = log_parser(log)
 
     if not test_results:
-        logger.info(f"No test results found in log, will check for unhandled errors.")
         # Check for unhandled pytest error
         if detect_unhandled_pytest_error(log):
-            logger.info("Found unhandled pytest error in log")
+            logger.info(f"No test results found in log, but found unhandled error.")
             unhandled_test_result = parse_unhandled_pytest_error(
                 log, "unhandled_test_error"
             )
