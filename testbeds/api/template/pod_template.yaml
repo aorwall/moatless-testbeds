@@ -102,23 +102,31 @@ spec:
           value: "{{ instance_id }}"
         - name: TESTBED_ID
           value: "{{ testbed_id }}"
-        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
-          valueFrom:
-            secretKeyRef:
-              name: testbed-secrets
-              key: AZURE_APPLICATIONINSIGHTS_CONNECTION_STRING
+        #- name: APPLICATIONINSIGHTS_CONNECTION_STRING
+        #  valueFrom:
+        #    secretKeyRef:
+        #      name: testbed-secrets
+        #      key: AZURE_APPLICATIONINSIGHTS_CONNECTION_STRING
       nodeSelector:
-        node-purpose: testbed
+        node-purpose: testbeds
       restartPolicy: OnFailure
       volumes:
       - name: shared-volume
         emptyDir: {}
       tolerations:
-      - key: "kubernetes.azure.com/scalesetpriority"
-        operator: "Equal"
-        value: "spot"
-        effect: "NoSchedule"
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
       - key: "node.kubernetes.io/unreachable"
         operator: "Exists"
         effect: "NoExecute"
+        tolerationSeconds: 300
+      - key: "node-purpose"
+        value: "testbeds"
+        operator: "Equal"
+        effect: "NoSchedule"
+      - key: "karpenter.sh/unregistered"
+        operator: "Exists"
+        effect: "NoSchedule"
   backoffLimit: 4

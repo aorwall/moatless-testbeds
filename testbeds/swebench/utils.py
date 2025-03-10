@@ -29,9 +29,10 @@ SOFTWARE.
 import json
 import logging
 import re
+import asyncio
 from argparse import ArgumentTypeError
 from pathlib import Path
-from typing import cast, Optional
+from typing import cast, Optional, Dict, Any, Union
 
 from testbeds.schema import SWEbenchInstance
 from testbeds.swebench.constants import (
@@ -56,7 +57,7 @@ PATCH_HUNK_PATTERN = re.compile(
 _SWEBENCH_DATASET = None
 
 
-def load_swebench_instance(
+async def load_swebench_instance(
     instance_id: str, name: str | None = None, split: str = "test"
 ) -> Optional[SWEbenchInstance]:
     # Try to load from individual instance file first
@@ -66,11 +67,13 @@ def load_swebench_instance(
         with instance_path.open("r", encoding="utf-8") as f:
             instance_data = json.load(f)
             return SWEbenchInstance(**instance_data)
-    
-    logger.info(f"Instance {instance_id} not found in local file, trying to load from API")
+
+    logger.info(
+        f"Instance {instance_id} not found in local file, trying to load from API"
+    )
 
     # Fallback to loading from dataset
-    instances = load_swebench_dataset(name, split)
+    instances = await load_swebench_dataset(name, split)
 
     for instance in instances:
         if instance.instance_id == instance_id:
@@ -80,7 +83,7 @@ def load_swebench_instance(
     return None
 
 
-def load_swebench_dataset(
+async def load_swebench_dataset(
     name: str | None = None, split: str | None = None
 ) -> list[SWEbenchInstance]:
     """
@@ -104,30 +107,51 @@ def load_swebench_dataset(
         logger.info(f"Dataset not found at {local_file.absolute()}")
 
     if not name:
-        instances.extend(download_instances("princeton-nlp/SWE-bench_Lite", "test"))
-        instances.extend(download_instances("princeton-nlp/SWE-bench_Verified", "test"))
-        instances.extend(download_instances("SWE-Gym/SWE-Gym", "train"))
+        instances.extend(
+            await download_instances("princeton-nlp/SWE-bench_Lite", "test")
+        )
+        instances.extend(
+            await download_instances("princeton-nlp/SWE-bench_Verified", "test")
+        )
+        instances.extend(await download_instances("SWE-Gym/SWE-Gym", "train"))
         _SWEBENCH_DATASET = instances
     else:
-        instances = download_instances(name, split)
+        instances = await download_instances(name, split or "test")
 
     return instances
 
-def download_instances(name: str, split: str = "test"):
+
+async def download_instances(name: str, split: str = "test"):
     logger.info(f"Downloading instances from {name} split {split}")
 
     from datasets import Dataset, load_dataset
 
-    dataset = cast(Dataset, load_dataset(name, split=split))
+    # Load dataset in a thread pool to avoid blocking
+    loop = asyncio.get_event_loop()
+    dataset = await loop.run_in_executor(
+        None, lambda: cast(Dataset, load_dataset(name, split=split))
+    )
 
     instances = []
-    for instance in dataset:
+    for instance_dict in dataset:
+        # Convert to mutable dictionary and ensure proper typing
+        instance: Dict[str, Any] = dict(instance_dict)
+
         # Convert uppercase to lowercase field names and handle string evaluation
         if "FAIL_TO_PASS" in instance:
-            instance["fail_to_pass"] = eval(instance["FAIL_TO_PASS"]) if isinstance(instance["FAIL_TO_PASS"], str) else instance["FAIL_TO_PASS"]
+            fail_to_pass = instance.get("FAIL_TO_PASS")
+            if isinstance(fail_to_pass, str):
+                instance["fail_to_pass"] = eval(fail_to_pass)
+            else:
+                instance["fail_to_pass"] = fail_to_pass
             del instance["FAIL_TO_PASS"]
+
         if "PASS_TO_PASS" in instance:
-            instance["pass_to_pass"] = eval(instance["PASS_TO_PASS"]) if isinstance(instance["PASS_TO_PASS"], str) else instance["PASS_TO_PASS"]
+            pass_to_pass = instance.get("PASS_TO_PASS")
+            if isinstance(pass_to_pass, str):
+                instance["pass_to_pass"] = eval(pass_to_pass)
+            else:
+                instance["pass_to_pass"] = pass_to_pass
             del instance["PASS_TO_PASS"]
 
         # Add environment_setup_commit if missing (for SWE-Gym compatibility)
@@ -136,6 +160,7 @@ def download_instances(name: str, split: str = "test"):
 
         instances.append(SWEbenchInstance(**instance, dataset=name))
     return instances
+
 
 def get_first_idx(charlist):
     """Get index of first occurrence of "-" or "+" in charlist"""
@@ -248,36 +273,21 @@ def get_test_directives(instance: SWEbenchInstance) -> list:
     Get test directives from the test_patch of a task instance
 
     Args:
-        instance (dict): task instance
-    Returns:
-        directives (list): List of test directives
+        instance (SWEbenchInstance): Task instance
     """
-
-    # Get test directives from test patch and remove non-test files
-    diff_pat = r"diff --git a/.* b/(.*)"
     test_patch = instance.test_patch
-    directives = re.findall(diff_pat, test_patch)
-    directives = [
-        d for d in directives if not any(d.endswith(ext) for ext in NON_TEST_EXTS)
-    ]
-
-    # For Django tests, remove extension + "tests/" prefix and convert slashes to dots (module referencing)
-    if instance.repo == "django/django":
-        directives_transformed = []
-        for d in directives:
-            d = d[: -len(".py")] if d.endswith(".py") else d
-            d = d[len("tests/") :] if d.startswith("tests/") else d
-            d = d.replace("/", ".")
-            directives_transformed.append(d)
-        directives = directives_transformed
-
-    return directives
+    test_directives = []
+    for patch in PATCH_PATTERN.findall(test_patch):
+        patch_header = PATCH_FILE_PATTERN.findall(patch)[0]
+        if patch_header:
+            file_path = patch_header.split("\n")[0].split(" ")[-1].strip()
+            file_ext = file_path.split(".")[-1]
+            if file_ext not in NON_TEST_EXTS:
+                test_directives.append(file_path)
+    return test_directives
 
 
 def str2bool(v):
-    """
-    Minor helper function to convert string to boolean
-    """
     if isinstance(v, bool):
         return v
     if v.lower() in ("yes", "true", "t", "y", "1"):
@@ -290,14 +300,16 @@ def str2bool(v):
 
 if __name__ == "__main__":
     # try with SWE-bench-Verified
-    print(load_swebench_instance(
-        instance_id="astropy__astropy-12907", 
-        name="princeton-nlp/SWE-bench_Verified",
-        split="test"
-    ))
+    print(
+        load_swebench_instance(
+            instance_id="astropy__astropy-12907",
+            name="princeton-nlp/SWE-bench_Verified",
+            split="test",
+        )
+    )
     # try with SWE-Gym
-    print(load_swebench_instance(
-        instance_id="getmoto__moto-5752", 
-        name="SWE-Gym/SWE-Gym",
-        split="train"
-    ))
+    print(
+        load_swebench_instance(
+            instance_id="getmoto__moto-5752", name="SWE-Gym/SWE-Gym", split="train"
+        )
+    )

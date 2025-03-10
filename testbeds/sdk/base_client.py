@@ -59,12 +59,7 @@ class BaseTestbedClient:
         self.current_span_id = None
 
         if not instance:
-            try:
-                self.instance = self._load_instance(instance_id)
-            except TestbedError:
-                # Fall back to local loading if API fails
-                logger.warning(f"Falling back to local instance loading for {instance_id}")
-                self.instance = load_swebench_instance(instance_id, name=dataset_name)
+            self.instance = self._load_instance(instance_id)
         else:
             self.instance = instance
 
