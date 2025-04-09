@@ -1,5 +1,16 @@
+#!/bin/bash
+
+# Source environment variables from .env file
+if [ -f .env ]; then
+    source .env
+else
+    echo "Error: .env file not found"
+    exit 1
+fi
+
 DOCKER_REGISTRY=${DOCKER_REGISTRY:-aorwall}
-IMAGE_TAG=${IMAGE_TAG:-latest}
+IMAGE_TAG=${IMAGE_TAG:-$(git rev-parse --short HEAD)}
+
 API_DOCKER_IMAGE=${DOCKER_REGISTRY}/moatless-testbed-api:${IMAGE_TAG}
 
 echo "Building API Docker image: ${API_DOCKER_IMAGE}"

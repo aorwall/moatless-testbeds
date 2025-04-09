@@ -23,7 +23,7 @@ from testbeds.schema import (
     TestRunResponse,
     TestStatus,
     EvaluationResult,
-    TestbedSummary
+    TestbedSummary,
 )
 from testbeds.swebench.constants import APPLY_PATCH_FAIL, RUN_TESTS, ResolvedStatus
 from testbeds.sdk.base_client import BaseTestbedClient
@@ -32,7 +32,7 @@ from testbeds.sdk.exceptions import (
     TestbedError,
     TestbedConnectionError,
     TestbedTimeoutError,
-    TestbedValidationError
+    TestbedValidationError,
 )
 from testbeds.swebench.log_parsers import parse_log
 
@@ -40,6 +40,7 @@ from opentelemetry import trace
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
+
 
 class AsyncTestbedClient(BaseTestbedClient):
     _cleanup_registered = False
@@ -62,6 +63,7 @@ class AsyncTestbedClient(BaseTestbedClient):
         ssl: bool = False,
         auth_token: str | None = None,
         verify_ssl: bool = True,
+        persist_testbed: bool = False,
     ):
         super().__init__(
             testbed_id=testbed_id,
@@ -75,15 +77,20 @@ class AsyncTestbedClient(BaseTestbedClient):
             test_cache=test_cache,
         )
         self.session: aiohttp.ClientSession | None = None
+        self.persist_testbed = persist_testbed
 
     async def __aenter__(self):
         """Enter the async context manager."""
         with tracer.start_as_current_span("testbed_setup") as span:
             try:
-                testbed = await self.get_or_create_testbed_async()
-                self.testbed_id = testbed.testbed_id
-                
-                await self.wait_until_ready()                
+                if not self.testbed_id:
+                    testbed = await self.get_or_create_testbed_async()
+                    self.testbed_id = testbed.testbed_id
+                    logger.info(f"Created new testbed with ID: {self.testbed_id}")
+                else:
+                    logger.info(f"Using existing testbed with ID: {self.testbed_id}")
+
+                await self.wait_until_ready()
                 return self
             except Exception as e:
                 span.record_exception(e)
@@ -91,7 +98,11 @@ class AsyncTestbedClient(BaseTestbedClient):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit the async context manager."""
-        await self.destroy()
+        if not self.persist_testbed:
+            logger.debug(f"Destroying testbed {self.testbed_id} on exit")
+            await self.destroy()
+        else:
+            logger.debug(f"Preserving testbed {self.testbed_id} for future use")
 
     async def _request(
         self,
@@ -140,10 +151,15 @@ class AsyncTestbedClient(BaseTestbedClient):
                     raise
 
             except Exception as e:
+                last_error = e  # Save the last error
                 if isinstance(e, asyncio.TimeoutError):
-                    logger.warning(f"Request timed out, retrying in {retry_delay} seconds... ({retries + 1}/{max_retries})")
+                    logger.warning(
+                        f"Request timed out, retrying in {retry_delay} seconds... ({retries + 1}/{max_retries})"
+                    )
                 elif isinstance(e, ClientConnectionError):
-                    logger.warning(f"Connection error ({str(e)}), retrying in {retry_delay} seconds... ({retries + 1}/{max_retries})")
+                    logger.warning(
+                        f"Connection error ({str(e)}), retrying in {retry_delay} seconds... ({retries + 1}/{max_retries})"
+                    )
                 elif isinstance(e, ClientResponseError):
                     if 400 <= e.status < 500:
                         error_message = str(e)
@@ -152,8 +168,8 @@ class AsyncTestbedClient(BaseTestbedClient):
 
                         try:
                             error_data = await response.json()
-                            error_message = error_data.get('message', error_message)
-                            error_code = error_data.get('error')
+                            error_message = error_data.get("message", error_message)
+                            error_code = error_data.get("error")
                             details = error_data
                         except:
                             try:
@@ -165,10 +181,14 @@ class AsyncTestbedClient(BaseTestbedClient):
                             raise TestbedAuthenticationError(error_message, error_code, details) from e
                         raise TestbedError(error_message, error_code, details) from e
 
-                    logger.warning(f"Server error {e.status}, retrying in {retry_delay} seconds... ({retries + 1}/{max_retries})")
+                    logger.warning(
+                        f"Server error {e.status}, retrying in {retry_delay} seconds... ({retries + 1}/{max_retries})"
+                    )
                 else:
-                    logger.warning(f"Unexpected error ({str(e)}), retrying in {retry_delay} seconds... ({retries + 1}/{max_retries})")
-    
+                    logger.warning(
+                        f"Unexpected error ({str(e)}), retrying in {retry_delay} seconds... ({retries + 1}/{max_retries})"
+                    )
+
             retries += 1
             if retries < max_retries:
                 await asyncio.sleep(retry_delay)
@@ -184,7 +204,9 @@ class AsyncTestbedClient(BaseTestbedClient):
         elif isinstance(last_error, ClientResponseError):
             raise TestbedError(f"Server error after {max_retries} retries: {str(last_error)}") from last_error
         else:
-            raise TestbedError(f"Max retries ({max_retries}) reached for {url} with error: {str(last_error)}") from last_error
+            raise TestbedError(
+                f"Max retries ({max_retries}) reached for {url} with error: {str(last_error)}"
+            ) from last_error
 
     async def check_health(self, timeout: int = 30) -> bool:
         """Check testbed health status."""
@@ -192,7 +214,7 @@ class AsyncTestbedClient(BaseTestbedClient):
             response = await self._request("GET", "health", operation_timeout=timeout)
             return response.get("status") == "OK"
         except TestbedError as e:
-            if hasattr(e, 'response') and e.response.status in [503, 504]:
+            if hasattr(e, "response") and e.response.status in [503, 504]:
                 return False
             raise
 
@@ -214,10 +236,14 @@ class AsyncTestbedClient(BaseTestbedClient):
                 await asyncio.sleep(1)
             except aiohttp.ClientError as e:
                 if isinstance(e, aiohttp.ClientConnectionError):
-                    logger.warning(f"Failed to connect to testbed {self.testbed_id}, will retry... (Tried for {wait_time} seconds)")
+                    logger.warning(
+                        f"Failed to connect to testbed {self.testbed_id}, will retry... (Tried for {wait_time} seconds)"
+                    )
                     await asyncio.sleep(1)
-                elif getattr(e, 'status', None) in [503, 504]:
-                    logger.warning(f"Got response {getattr(e, 'status')} indicating that the testbed {self.testbed_id} might not be ready yet, will retry... (Tried for {wait_time} seconds)")
+                elif getattr(e, "status", None) in [503, 504]:
+                    logger.warning(
+                        f"Got response {getattr(e, 'status')} indicating that the testbed {self.testbed_id} might not be ready yet, will retry... (Tried for {wait_time} seconds)"
+                    )
                     await asyncio.sleep(1)
                 else:
                     logger.error(f"Health check failed. {str(e)}")
@@ -255,28 +281,27 @@ class AsyncTestbedClient(BaseTestbedClient):
         response = await self._request("POST", "apply-patch", json={"patch": patch})
 
         if APPLY_PATCH_FAIL in response.get("output", ""):
-            logger.error(
-                f"Failed to apply patch: {patch}.\n\nOutput\n:{response.get('output', '')}"
-            )
-            raise RuntimeError(
-                f"Failed to apply patch: {patch}.\n\nOutput\n:{response.get('output', '')}"
-            )
+            logger.error(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.get('output', '')}")
+            raise RuntimeError(f"Failed to apply patch: {patch}.\n\nOutput\n:{response.get('output', '')}")
 
         diff = await self.get_diff()
         logger.debug(f"Diff after patch: \n{diff}")
         return diff
 
     async def run_tests(
-        self, test_files: list[str] | None = None, patch: str | None = None, timeout: int = 1200
+        self,
+        test_files: list[str] | None = None,
+        patch: str | None = None,
+        timeout: int = 1200,
     ) -> TestRunResponse:
         with tracer.start_as_current_span("run_tests") as span:
             span.set_attribute("test_files", test_files)
             span.set_attribute("has_patch", patch is not None)
             span.set_attribute("timeout", timeout)
-            
+
             try:
                 logger.debug(f"Executing run_tests with test_files={test_files} and patch={patch}")
-                
+
                 if self.test_cache is not None:
                     cache_key = self._generate_cache_key(test_files, patch)
                     cached_result = self.test_cache.get(cache_key)
@@ -286,50 +311,57 @@ class AsyncTestbedClient(BaseTestbedClient):
                         return cached_result
 
                 span.set_attribute("cache_hit", False)
+                if self.persist_testbed:
+                    await self.reset_testbed()
                 if patch:
                     await self.apply_patch(patch)
 
                 test_results = []
-                for test_file in test_files:
-                    with tracer.start_as_current_span("run_single_test") as test_span:
-                        test_span.set_attribute("test_file", test_file)
-                        test_start = time.time()
-                        data = {"test_files": [test_file]}
-                        await self._request("POST", "run-tests", json=data)
-                        response = await self.get_execution_status()
-                        start_time = time.time()
-                        while response.status == "running":
-                            if time.time() - start_time > timeout:
-                                raise TimeoutError(f"Execution timed out after {timeout} seconds")
-                            await asyncio.sleep(1.0)
+                if test_files:  # Check if test_files is not None
+                    for test_file in test_files:
+                        with tracer.start_as_current_span("run_single_test") as test_span:
+                            test_span.set_attribute("test_file", test_file)
+                            test_start = time.time()
+                            data = {"test_files": [test_file]}
+                            await self._request("POST", "run-tests", json=data)
                             response = await self.get_execution_status()
-                        
-                        test_end = time.time()
-                        test_duration = test_end - test_start
-                        test_span.set_attribute("duration", test_duration)
+                            start_time = time.time()
+                            while response.status == "running":
+                                if time.time() - start_time > timeout:
+                                    raise TimeoutError(f"Execution timed out after {timeout} seconds")
+                                await asyncio.sleep(1.0)
+                                response = await self.get_execution_status()
 
-                        if self.log_dir:
-                            datetime_str = time.strftime("%Y%m%d-%H%M%S")
-                            with open(f"{self.log_dir}/{datetime_str}_run_tests.log", "a") as f:
-                                f.write(f"Response:\n{response.output}\n")
+                            test_end = time.time()
+                            test_duration = test_end - test_start
+                            test_span.set_attribute("duration", test_duration)
 
-                        log = response.output.split(f"{RUN_TESTS}\n")[-1]
-                        test_result = parse_log(log, self.test_spec.repo)
+                            if self.log_dir:
+                                datetime_str = time.strftime("%Y%m%d-%H%M%S")
+                                with open(f"{self.log_dir}/{datetime_str}_run_tests.log", "a") as f:
+                                    f.write(f"Response:\n{response.output}\n")
 
-                        if len(test_result) == 1 and test_result[0].status == TestStatus.ERROR:
-                            test_result[0].file_path = test_file
-                            test_span.set_attribute("error", True)
+                            log = response.output.split(f"{RUN_TESTS}\n")[-1]
+                            test_result = parse_log(log, self.test_spec.repo)
 
-                        filtered_test_result = []
-                        for test in test_result:
-                            if test.file_path != test_file:
-                                logger.info(f"Skipping test {test.method} in {test.file_path}. Expected {test_file}")
-                            else:
-                                filtered_test_result.append(test)
+                            if len(test_result) == 1 and test_result[0].status == TestStatus.ERROR:
+                                test_result[0].file_path = test_file
+                                test_span.set_attribute("error", True)
 
-                        test_results.extend(filtered_test_result)
-                        test_span.set_attribute("test_count", len(filtered_test_result))
-                        logger.info(f"Finished running {test_file} tests. Got {len(filtered_test_result)} test results.")
+                            filtered_test_result = []
+                            for test in test_result:
+                                if test.file_path != test_file:
+                                    logger.info(
+                                        f"Skipping test {test.method} in {test.file_path}. Expected {test_file}"
+                                    )
+                                else:
+                                    filtered_test_result.append(test)
+
+                            test_results.extend(filtered_test_result)
+                            test_span.set_attribute("test_count", len(filtered_test_result))
+                            logger.info(
+                                f"Finished running {test_file} tests. Got {len(filtered_test_result)} test results."
+                            )
 
                 filtered_test_result = []
                 tests_by_file = {}
@@ -342,51 +374,50 @@ class AsyncTestbedClient(BaseTestbedClient):
 
                     if test.file_path not in tests_by_file:
                         tests_by_file[test.file_path] = {"count": 0, "statuses": {}}
-                    
+
                     tests_by_file[test.file_path]["count"] += 1
                     if test.status not in tests_by_file[test.file_path]["statuses"]:
                         tests_by_file[test.file_path]["statuses"][test.status] = 0
                     tests_by_file[test.file_path]["statuses"][test.status] += 1
 
-                summary = [f"{file_path}: {stats['count']} tests. {stats['statuses']}" 
-                            for file_path, stats in tests_by_file.items()]
+                summary = [
+                    f"{file_path}: {stats['count']} tests. {stats['statuses']}"
+                    for file_path, stats in tests_by_file.items()
+                ]
                 logger.info(f"Test summary by file: {' | '.join(summary)}")
 
                 result = TestRunResponse(test_results=filtered_test_result)
-                
+
                 if self.test_cache is not None:
                     cache_key = self._generate_cache_key(test_files, patch)
                     self.test_cache[cache_key] = result
-                    
+
                 return result
             except Exception as e:
                 span.record_exception(e)
                 raise
 
-    async def run_evaluation(
-        self, run_id: str | None = None, patch: str | None = None
-    ) -> EvaluationResult:
+    async def run_evaluation(self, run_id: str | None = None, patch: str | None = None) -> EvaluationResult:
         with tracer.start_as_current_span("run_evaluation") as span:
             span.set_attribute("run_id", run_id)
             span.set_attribute("has_patch", patch is not None)
-            
+
             try:
                 self.current_span_id = uuid.uuid4().hex[:16]
                 eval_start = time.time()
-                
+
                 if not self.instance:
                     raise ValueError("SWE-bench instance not set")
 
                 try:
+                    if self.persist_testbed:
+                        await self.reset_testbed()
+
                     if not patch:
-                        logger.info(
-                            f"Running evaluation for instance {self.instance.instance_id} with gold prediction"
-                        )
+                        logger.info(f"Running evaluation for instance {self.instance.instance_id} with gold prediction")
                         patch = self.instance.patch
                     else:
-                        logger.info(
-                            f"Running evaluation for instance {self.instance.instance_id} with patch"
-                        )
+                        logger.info(f"Running evaluation for instance {self.instance.instance_id} with patch")
 
                     await self.wait_until_ready()
                     await self.apply_patch(patch)
@@ -432,7 +463,7 @@ class AsyncTestbedClient(BaseTestbedClient):
 
                     test_status = self.test_spec.get_pred_report(response.output)
                     span.set_attribute("resolved_status", test_status.status)
-                    
+
                     return EvaluationResult(
                         run_id=run_id or "default",
                         resolved=test_status.status == ResolvedStatus.FULL,
@@ -458,6 +489,13 @@ class AsyncTestbedClient(BaseTestbedClient):
             logger.error(f"Error during execute: {str(e)}")
             raise
 
+    async def reset_testbed(self):
+        try:
+            await self._request("POST", "reset")
+        except Exception as e:
+            logger.error(f"Error during reset: {str(e)}")
+            raise
+
     async def destroy(self):
         """Destroy the testbed and remove from tracking"""
         try:
@@ -466,9 +504,7 @@ class AsyncTestbedClient(BaseTestbedClient):
             logger.error(f"Error destroying testbed: {e}")
             raise
 
-    async def get_or_create_testbed_async(
-        self
-    ) -> TestbedSummary:
+    async def get_or_create_testbed_async(self) -> TestbedSummary:
         if not self.instance:
             raise TestbedValidationError("instance_id is required")
 

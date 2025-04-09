@@ -254,6 +254,7 @@ class TestbedClient:
                 state="unknown",
                 reason=None,
                 message=None,
+                restart_reasons=None,
             )
             sidecar_status = ContainerStatus(
                 ready=False,
@@ -262,12 +263,24 @@ class TestbedClient:
                 state="unknown",
                 reason=None,
                 message=None,
+                restart_reasons=None,
             )
 
             if pod.status and pod.status.container_statuses:
                 for container in pod.status.container_statuses:
                     container = cast(V1ContainerStatus, container)
-                    status = self._get_container_status(container)
+
+                    # Fetch logs for containers with restarts to provide context
+                    prev_logs = None
+                    if container.restart_count > 0:
+                        prev_logs = await self._get_container_logs(
+                            pod.metadata.name, container.name
+                        )
+
+                    status = self._get_container_status(
+                        container, pod.metadata.name, prev_logs
+                    )
+
                     if container.name == "testbed":
                         testbed_status = status
                     elif container.name == "sidecar":
@@ -307,10 +320,13 @@ class TestbedClient:
                 f"Failed to get external IP for testbed {self.testbed_id}: {e}"
             )
 
-    def _get_container_status(self, container) -> ContainerStatus:
+    def _get_container_status(
+        self, container, pod_name=None, prev_logs=None
+    ) -> ContainerStatus:
         state = "unknown"
         reason = None
         message = None
+        restart_reasons = None
 
         if container.state.running:
             state = "running"
@@ -323,6 +339,43 @@ class TestbedClient:
             reason = container.state.terminated.reason
             message = container.state.terminated.message
 
+        # Add restart reasons info when restart_count > 0
+        if container.restart_count > 0 and hasattr(container, "last_state"):
+            last_state = container.last_state
+            if last_state:
+                restart_info = []
+                if last_state.terminated:
+                    restart_info.append(
+                        f"Last terminated: {last_state.terminated.reason or 'Unknown'}"
+                    )
+                    if last_state.terminated.message:
+                        restart_info.append(f"Message: {last_state.terminated.message}")
+                    if (
+                        hasattr(last_state.terminated, "exit_code")
+                        and last_state.terminated.exit_code
+                    ):
+                        restart_info.append(
+                            f"Exit code: {last_state.terminated.exit_code}"
+                        )
+                elif last_state.waiting:
+                    restart_info.append(
+                        f"Last waiting: {last_state.waiting.reason or 'Unknown'}"
+                    )
+                    if last_state.waiting.message:
+                        restart_info.append(f"Message: {last_state.waiting.message}")
+
+                if restart_info:
+                    restart_reasons = "; ".join(restart_info)
+
+        # Add previous logs to restart_reasons if available
+        if prev_logs:
+            if restart_reasons:
+                restart_reasons = (
+                    f"{restart_reasons}\n\nPrevious logs (tail):\n{prev_logs}"
+                )
+            else:
+                restart_reasons = f"Previous logs (tail):\n{prev_logs}"
+
         return ContainerStatus(
             ready=container.ready,
             started=container.started,
@@ -330,6 +383,7 @@ class TestbedClient:
             state=state,
             reason=reason,
             message=message,
+            restart_reasons=restart_reasons,
         )
 
     async def _get_job(self):
@@ -391,55 +445,83 @@ class TestbedClient:
 
     async def get_execution_status(self) -> CommandExecutionResponse:
         """Get the status of the current command execution."""
+        if not self.base_url:
+            raise HTTPException(
+                status_code=502,
+                detail=f"No base URL configured for testbed {self.testbed_id}",
+            )
+
         try:
-            if not self.base_url:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"No base URL configured for testbed {self.testbed_id}",
-                )
-
-            session = await self._get_session()
-            async with session.get(f"{self.base_url}/exec") as response:
-                response.raise_for_status()
-                data = await response.json()
-                response = CommandExecutionResponse.model_validate(data)
-                if response.status == "completed":
-                    logger.info(
-                        f"Command execution completed in testbed {self.testbed_id}"
-                    )
-                return response
-
+            return await self._fetch_execution_status_from_api()
         except aiohttp.ClientError as e:
             logger.warning(
                 f"Connection error to testbed {self.testbed_id}. Error: {str(e)}"
             )
-            try:
-                # Initialize Kubernetes clients if needed
-                if not self.core_v1:
-                    await self.initialize()
-
-                status = await self._read_testbed_status_detailed(self.testbed_id)
-                if status:
-                    raise HTTPException(
-                        status_code=502,
-                        detail=f"Connection refused to testbed {self.testbed_id}. Status: {status.model_dump_json(indent=2)}",
-                    )
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Connection refused to testbed {self.testbed_id}. Status unknown.",
-                )
-            except Exception as inner_e:
-                logger.error(f"Error getting testbed status: {inner_e}")
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Connection refused to testbed {self.testbed_id}. Unable to get current status.",
-                )
-
+            return await self._handle_api_connection_error()
         except Exception as e:
             logger.error(f"Error during get_execution_status: {str(e)}")
             raise HTTPException(
                 status_code=502,
                 detail=f"Request failed for testbed {self.testbed_id}: {str(e)}",
+            )
+
+    async def _fetch_execution_status_from_api(self) -> CommandExecutionResponse:
+        """Fetch execution status from the testbed API."""
+        session = await self._get_session()
+        async with session.get(f"{self.base_url}/exec") as response:
+            response.raise_for_status()
+            data = await response.json()
+            response = CommandExecutionResponse.model_validate(data)
+            if response.status == "completed":
+                logger.info(f"Command execution completed in testbed {self.testbed_id}")
+            return response
+
+    async def _handle_api_connection_error(self) -> CommandExecutionResponse:
+        """Handle connection errors by checking pod status via Kubernetes API."""
+        # Ensure Kubernetes client is initialized
+        await self._ensure_kubernetes_client()
+
+        # Get testbed status
+        status = await self._get_testbed_status()
+
+        # Always raise an exception with appropriate details
+        if status:
+            status_json = status.model_dump_json(indent=2)
+            logger.warning(
+                f"Connection refused to testbed {self.testbed_id}. Status: {status_json}"
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Connection refused to testbed {self.testbed_id}. Status: {status_json}",
+            )
+
+        # If we reached here, we couldn't get status details
+        raise HTTPException(
+            status_code=502,
+            detail=f"Connection refused to testbed {self.testbed_id}. Status unknown.",
+        )
+
+    async def _ensure_kubernetes_client(self):
+        """Ensure Kubernetes client is initialized."""
+        if not self.core_v1:
+            try:
+                await self.initialize()
+            except Exception as e:
+                logger.exception(f"Failed to initialize Kubernetes client: {e}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Connection refused to testbed {self.testbed_id} and failed to initialize Kubernetes client.",
+                )
+
+    async def _get_testbed_status(self):
+        """Get testbed status via Kubernetes API with error handling."""
+        try:
+            return await self._read_testbed_status_detailed(self.testbed_id)
+        except Exception as e:
+            logger.exception(f"Error getting testbed status: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Connection refused to testbed {self.testbed_id}. Unable to get current status.",
             )
 
     async def get_diff(self) -> str:
@@ -474,11 +556,14 @@ class TestbedClient:
 
         patch_files = self._get_patch_files(patch)
         for patch_file in patch_files:
-            file = await self.get_file(patch_file)
-            if not file:
-                await self.save_file(patch_file, "")
+            try:
+                file = await self.get_file(patch_file)
+                if not file:
+                    await self.save_file(patch_file, "")
+            except Exception as e:
+                logger.exception(f"Failed to check if {patch_file} exists: {e}")
 
-        patch_filepath = f"/shared/patch.diff"
+        patch_filepath = "/shared/patch.diff"
         if not patch.endswith("\n"):
             patch += "\n"
         await self.save_file(patch_filepath, patch)
@@ -584,3 +669,33 @@ class TestbedClient:
         except Exception as e:
             logger.error(f"Failed to initialize Kubernetes clients: {e}")
             raise RuntimeError("Failed to initialize Kubernetes clients") from e
+
+    async def _get_container_logs(
+        self, pod_name: str, container_name: str, lines: int = 10
+    ) -> Optional[str]:
+        """Get the most recent logs for a container to provide context for restarts."""
+        try:
+            if not self.core_v1:
+                await self.initialize()
+                if not self.core_v1:
+                    return None
+
+            logs = await self.core_v1.read_namespaced_pod_log(
+                name=pod_name,
+                namespace=self.namespace,
+                container=container_name,
+                tail_lines=lines,
+                previous=True,  # Get logs from the previous instance of the container
+            )
+            return logs
+        except ApiException as e:
+            # 400 error is expected if the container has not been restarted yet
+            if e.status == 400:
+                return None
+            logger.debug(
+                f"Error retrieving logs for container {container_name} in pod {pod_name}: {e}"
+            )
+            return None
+        except Exception as e:
+            logger.debug(f"Unexpected error retrieving logs: {e}")
+            return None

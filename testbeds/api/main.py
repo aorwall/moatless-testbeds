@@ -15,7 +15,6 @@ import aiohttp
 from starlette.datastructures import State
 
 from testbeds.api.manager import TestbedManager
-from testbeds.exceptions import TestbedNotFoundError
 from testbeds.schema import TestbedSummary, TestbedDetailed
 
 logger = logging.getLogger(__name__)
@@ -375,6 +374,18 @@ def create_app():
 
         return status
 
+    @app.post("/testbeds/{testbed_id}/reset")
+    async def reset_testbed(
+        testbed_id: str,
+        user_id: str = Depends(validate_api_key),
+        resources: ClientResources = Depends(get_client_resources),
+    ):
+        client = await resources["manager"].create_client(
+            testbed_id, user_id, session=resources["session"]
+        )
+        await client.reset()
+        return {"message": "Testbed reset"}
+
     class ExecuteCommandsRequest(BaseModel):
         commands: list[str]
 
@@ -418,10 +429,6 @@ def create_app():
         user_id: str = Depends(validate_api_key),
         resources: ClientResources = Depends(get_client_resources),
     ):
-        logger.debug(
-            f"check_testbed_health(testbed_id={testbed_id}, user_id={user_id})"
-        )
-
         # First check if testbed exists and is starting up
         status = await resources["manager"].get_testbed_status(testbed_id, user_id)
         if status["status"] in ["Pending", "Unknown"]:

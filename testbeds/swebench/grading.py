@@ -139,7 +139,7 @@ def compute_pass_to_pass(report: dict[str, dict[str, Any]]) -> float:
     return len(report[PASS_TO_PASS]["success"]) / total
 
 
-def get_resolution_status(report: dict[str, dict[str, Any]]) -> str:
+def get_resolution_status(report: dict[str, dict[str, Any]]) -> ResolvedStatus:
     """
     Determine resolved status of an evaluation instance
 
@@ -152,8 +152,8 @@ def get_resolution_status(report: dict[str, dict[str, Any]]) -> str:
     p2p = compute_pass_to_pass(report)
 
     if f2p == 1 and p2p == 1:
-        return ResolvedStatus.FULL.value
+        return ResolvedStatus.FULL
     elif f2p < 1 and f2p > 0 and p2p == 1:
-        return ResolvedStatus.PARTIAL.value
+        return ResolvedStatus.PARTIAL
     else:
-        return ResolvedStatus.NO.value
+        return ResolvedStatus.NO

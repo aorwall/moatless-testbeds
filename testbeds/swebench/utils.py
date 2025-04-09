@@ -68,9 +68,7 @@ async def load_swebench_instance(
             instance_data = json.load(f)
             return SWEbenchInstance(**instance_data)
 
-    logger.info(
-        f"Instance {instance_id} not found in local file, trying to load from API"
-    )
+    logger.info(f"Instance {instance_id} not found in local file, trying to load from API")
 
     # Fallback to loading from dataset
     instances = await load_swebench_dataset(name, split)
@@ -83,9 +81,7 @@ async def load_swebench_instance(
     return None
 
 
-async def load_swebench_dataset(
-    name: str | None = None, split: str | None = None
-) -> list[SWEbenchInstance]:
+async def load_swebench_dataset(name: str | None = None, split: str | None = None) -> list[SWEbenchInstance]:
     """
     Load SWE-bench dataset from memory if available (only for princeton-nlp/SWE-bench),
     otherwise load from local JSON file if it exists,
@@ -107,12 +103,8 @@ async def load_swebench_dataset(
         logger.info(f"Dataset not found at {local_file.absolute()}")
 
     if not name:
-        instances.extend(
-            await download_instances("princeton-nlp/SWE-bench_Lite", "test")
-        )
-        instances.extend(
-            await download_instances("princeton-nlp/SWE-bench_Verified", "test")
-        )
+        instances.extend(await download_instances("princeton-nlp/SWE-bench_Lite", "test"))
+        instances.extend(await download_instances("princeton-nlp/SWE-bench_Verified", "test"))
         instances.extend(await download_instances("SWE-Gym/SWE-Gym", "train"))
         _SWEBENCH_DATASET = instances
     else:
@@ -128,9 +120,7 @@ async def download_instances(name: str, split: str = "test"):
 
     # Load dataset in a thread pool to avoid blocking
     loop = asyncio.get_event_loop()
-    dataset = await loop.run_in_executor(
-        None, lambda: cast(Dataset, load_dataset(name, split=split))
-    )
+    dataset = await loop.run_in_executor(None, lambda: cast(Dataset, load_dataset(name, split=split)))
 
     instances = []
     for instance_dict in dataset:
@@ -231,9 +221,7 @@ def extract_minimal_patch(model_patch):
             pre_start, pre_len, post_start, post_len, total_delta = get_hunk_stats(
                 pre_start, pre_len, post_start, post_len, content, total_delta
             )
-            new_patch += (
-                f"@@ -{pre_start},{pre_len} +{post_start},{post_len} @@{content}"
-            )
+            new_patch += f"@@ -{pre_start},{pre_len} +{post_start},{post_len} @@{content}"
     return new_patch
 
 
@@ -308,8 +296,4 @@ if __name__ == "__main__":
         )
     )
     # try with SWE-Gym
-    print(
-        load_swebench_instance(
-            instance_id="getmoto__moto-5752", name="SWE-Gym/SWE-Gym", split="train"
-        )
-    )
+    print(load_swebench_instance(instance_id="getmoto__moto-5752", name="SWE-Gym/SWE-Gym", split="train"))

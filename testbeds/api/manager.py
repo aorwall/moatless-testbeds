@@ -818,16 +818,16 @@ class TestbedManager:
             request_cpu = "0.2"
 
         if instance_id.startswith("matplotlib"):
-            limit_memory = "1.2Gi"
-            request_memory = "800Mi"
+            limit_memory = "3.0Gi"
+            request_memory = "2.0Gi"
         else:
-            limit_memory = "1Gi"
-            request_memory = "600Mi"
+            # limit_memory = "1Gi"
+            # request_memory = "600Mi"
+            limit_memory = "2.0Gi"
+            request_memory = "1.0Gi"
 
         limit_cpu = "2.0"
         request_cpu = "1.0"
-        limit_memory = "2.0Gi"
-        request_memory = "1.0Gi"
 
         if instance.dataset == "SWE-Gym/SWE-Gym":
             image_instance_id = instance_id.replace("__", "_s_")

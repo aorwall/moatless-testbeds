@@ -113,6 +113,7 @@ def test_django_5():
         log = f.read()
 
     result = parse_log(log, "django/django")
+    print(result)
 
     assert len(result) == 1
     assert len(result[0].stacktrace) == 24

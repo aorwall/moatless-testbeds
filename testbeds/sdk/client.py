@@ -14,7 +14,9 @@ from requests.exceptions import RequestException, Timeout
 from testbeds.schema import (
     EvaluationResult,
     CommandExecutionResponse,
-    TestRunResponse, SWEbenchInstance, TestStatus,
+    TestRunResponse,
+    SWEbenchInstance,
+    TestStatus,
 )
 from testbeds.swebench.constants import ResolvedStatus, APPLY_PATCH_FAIL, RUN_TESTS
 from testbeds.swebench.log_parsers import parse_log
@@ -45,7 +47,7 @@ class TestbedClient(BaseTestbedClient):
             response = self._request("GET", "health", operation_timeout=timeout)
             return response.get("status") == "OK"
         except TestbedError as e:
-            if hasattr(e, 'response') and e.response.status_code in [503, 504]:
+            if hasattr(e, "response") and e.response.status_code in [503, 504]:
                 return False
             raise
 
@@ -88,18 +90,22 @@ class TestbedClient(BaseTestbedClient):
                 response = requests.request(
                     method, url, headers=headers, timeout=30, **kwargs
                 )
-                
+
                 response.raise_for_status()
                 logger.debug(f"Request to {url} successful")
                 return response.json()
             except requests.exceptions.Timeout:
                 retries += 1
                 if retries == max_retries:
-                    raise TestbedTimeoutError(f"Request to {url} timed out after {max_retries} retries")
+                    raise TestbedTimeoutError(
+                        f"Request to {url} timed out after {max_retries} retries"
+                    )
             except requests.exceptions.ConnectionError as e:
                 retries += 1
                 if retries == max_retries:
-                    raise TestbedConnectionError(f"Failed to connect to testbed after {max_retries} retries") from e
+                    raise TestbedConnectionError(
+                        f"Failed to connect to testbed after {max_retries} retries"
+                    ) from e
             except requests.exceptions.HTTPError as e:
                 error_message = str(e)
                 error_code = None
@@ -107,27 +113,31 @@ class TestbedClient(BaseTestbedClient):
 
                 try:
                     error_data = e.response.json()
-                    error_message = error_data.get('message')
-                    error_code = error_data.get('error')
+                    error_message = error_data.get("message")
+                    error_code = error_data.get("error")
                     details = error_data
                 except (ValueError, AttributeError):
                     error_message = e.response.text or str(e)
 
                 if 400 <= e.response.status_code < 500:
                     if e.response.status_code == 401:
-                        raise TestbedAuthenticationError(error_message, error_code, details) from e
+                        raise TestbedAuthenticationError(
+                            error_message, error_code, details
+                        ) from e
                     raise TestbedError(error_message, error_code, details) from e
-                
+
                 # Only retry on server errors (500+)
                 retries += 1
                 if retries == max_retries:
                     raise TestbedError(
                         f"Server error after {max_retries} retries: {error_message}",
                         error_code,
-                        details
+                        details,
                     ) from e
 
-            logger.warning(f"Request failed, retrying in {retry_delay} seconds... ({retries}/{max_retries})")
+            logger.warning(
+                f"Request failed, retrying in {retry_delay} seconds... ({retries}/{max_retries})"
+            )
             time.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_retry_delay)
 
@@ -147,23 +157,33 @@ class TestbedClient(BaseTestbedClient):
                 logger.debug(f"Testbed {self.testbed_id} not ready yet, waiting...")
                 time.sleep(1)
             except Timeout as e:
-                logger.warning(f"Testbed {self.testbed_id} not ready yet, will retry (Tried for {wait_time} seconds)")
+                logger.warning(
+                    f"Testbed {self.testbed_id} not ready yet, will retry (Tried for {wait_time} seconds)"
+                )
                 time.sleep(1)
             except RequestException as e:
                 if isinstance(e, requests.exceptions.ConnectionError):
-                    logger.warning(f"Failed to connect to testbed {self.testbed_id}, will retry... (Tried for {wait_time} seconds)")
+                    logger.warning(
+                        f"Failed to connect to testbed {self.testbed_id}, will retry... (Tried for {wait_time} seconds)"
+                    )
                     time.sleep(1)
                 elif e.response and e.response.status_code in [503, 504]:
-                    logger.warning(f"Got response {e.response.status_code} indicating that the testbed {self.testbed_id} might not be ready yet, will retry...  (Tried for {wait_time} seconds)")
+                    logger.warning(
+                        f"Got response {e.response.status_code} indicating that the testbed {self.testbed_id} might not be ready yet, will retry...  (Tried for {wait_time} seconds)"
+                    )
                     time.sleep(1)
                 else:
                     logger.error(f"Health check failed. {str(e)} {e.response.text}")
                     raise e
             except Exception as e:
-                logger.warning(f"Health check failed: {str(e)}, retrying... (Tried for {wait_time} seconds)")
+                logger.warning(
+                    f"Health check failed: {str(e)}, retrying... (Tried for {wait_time} seconds)"
+                )
                 time.sleep(1)
 
-        raise TimeoutError(f"Testbed {self.testbed_id} not ready within {wait_time} seconds")
+        raise TimeoutError(
+            f"Testbed {self.testbed_id} not ready within {wait_time} seconds"
+        )
 
     def status(self):
         return self._request("GET", "status")
@@ -203,8 +223,9 @@ class TestbedClient(BaseTestbedClient):
         logger.debug(f"Diff after patch: \n{diff}")
         return diff
 
-
-    def _generate_cache_key(self, test_files: list[str] | None, patch: str | None) -> str:
+    def _generate_cache_key(
+        self, test_files: list[str] | None, patch: str | None
+    ) -> str:
         """Generate a unique cache key based on test files and patch content"""
         key_parts = []
         if test_files:
@@ -218,9 +239,14 @@ class TestbedClient(BaseTestbedClient):
         return hashlib.sha256(combined.encode()).hexdigest()
 
     def run_tests(
-        self, test_files: list[str] | None = None, patch: str | None = None, timeout: int = 1200
+        self,
+        test_files: list[str] | None = None,
+        patch: str | None = None,
+        timeout: int = 1200,
     ) -> TestRunResponse:
-        logger.debug(f"Executing run_tests with test_files={test_files} and patch={patch}")
+        logger.debug(
+            f"Executing run_tests with test_files={test_files} and patch={patch}"
+        )
 
         if self.test_cache is not None:
             cache_key = self._generate_cache_key(test_files, patch)
@@ -259,12 +285,16 @@ class TestbedClient(BaseTestbedClient):
             filtered_test_result = []
             for test in test_result:
                 if test.file_path != test_file:
-                    logger.info(f"Skipping test {test.method} in {test.file_path}. Expected {test_file}")
+                    logger.info(
+                        f"Skipping test {test.method} in {test.file_path}. Expected {test_file}"
+                    )
                 else:
                     filtered_test_result.append(test)
 
             test_results.extend(filtered_test_result)
-            logger.info(f"Finished running {test_file} tests. Got {len(filtered_test_result)} test results.")
+            logger.info(
+                f"Finished running {test_file} tests. Got {len(filtered_test_result)} test results."
+            )
 
         filtered_test_result = []
 
@@ -288,8 +318,10 @@ class TestbedClient(BaseTestbedClient):
                 tests_by_file[test.file_path]["statuses"][test.status] = 0
             tests_by_file[test.file_path]["statuses"][test.status] += 1
 
-        summary = [f"{file_path}: {stats['count']} tests. {stats['statuses']}"
-                  for file_path, stats in tests_by_file.items()]
+        summary = [
+            f"{file_path}: {stats['count']} tests. {stats['statuses']}"
+            for file_path, stats in tests_by_file.items()
+        ]
         logger.info(f"Test summary by file: {' | '.join(summary)}")
 
         result = TestRunResponse(test_results=filtered_test_result)
@@ -319,6 +351,7 @@ class TestbedClient(BaseTestbedClient):
                 )
 
             self.wait_until_ready()
+            self.reset_testbed()
 
             self.apply_patch(patch)
 
@@ -371,6 +404,19 @@ class TestbedClient(BaseTestbedClient):
             )
         finally:
             self.current_span_id = None
+
+    def reset_testbed(self):
+        try:
+            response = self._request(
+                "POST",
+                "reset",
+                json={"instance_id": self.instance.instance_id, "run_id": self.run_id},
+            )
+            logger.info(f"Reset testbed {self.testbed_id}: {response}")
+            return response
+        except requests.RequestException as e:
+            logger.error(f"Error during reset: {str(e)}")
+            raise e
 
     def execute(self, commands: List[str] | str):
         if isinstance(commands, str):

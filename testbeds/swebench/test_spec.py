@@ -33,7 +33,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from testbeds.schema import SWEbenchInstance, TestsStatus, EvalTestResult
+from swebench.harness.constants import SWEbenchInstance
+from testbeds.schema import TestsStatus, EvalTestResult
 from testbeds.swebench.constants import (
     MAP_REPO_TO_INSTALL,
     MAP_REPO_VERSION_TO_SPECS,
@@ -74,10 +75,14 @@ class TestSpec:
         self.env_name = "testbed"
         self.repo_directory = f"/{self.env_name}"
         if self.repo not in MAP_REPO_VERSION_TO_SPECS:
-            raise ValueError(f"Repository {self.repo} not found in MAP_REPO_VERSION_TO_SPECS {MAP_REPO_VERSION_TO_SPECS.keys()}")
+            raise ValueError(
+                f"Repository {self.repo} not found in MAP_REPO_VERSION_TO_SPECS {MAP_REPO_VERSION_TO_SPECS.keys()}"
+            )
         if self.version not in MAP_REPO_VERSION_TO_SPECS[self.repo]:
-            raise ValueError(f"Version {self.version} not found in MAP_REPO_VERSION_TO_SPECS[{self.repo}] {MAP_REPO_VERSION_TO_SPECS[self.repo].keys()}")
-        
+            raise ValueError(
+                f"Version {self.version} not found in MAP_REPO_VERSION_TO_SPECS[{self.repo}] {MAP_REPO_VERSION_TO_SPECS[self.repo].keys()}"
+            )
+
         self.specs = MAP_REPO_VERSION_TO_SPECS[self.repo][self.version]
 
     @classmethod
@@ -92,29 +97,23 @@ class TestSpec:
             arch = "x86_64"
 
         return cls(
-            instance_id=instance.instance_id,
-            repo=instance.repo,
-            version=instance.version,
-            base_commit=instance.base_commit,
-            test_patch=instance.test_patch,
-            fail_to_pass=instance.fail_to_pass,
-            pass_to_pass=instance.pass_to_pass,
+            instance_id=instance["instance_id"],
+            repo=instance["repo"],
+            version=instance["version"],
+            base_commit=instance["base_commit"],
+            test_patch=instance["test_patch"],
+            fail_to_pass=instance["FAIL_TO_PASS"] if "FAIL_TO_PASS" in instance else instance["fail_to_pass"],
+            pass_to_pass=instance["PASS_TO_PASS"] if "PASS_TO_PASS" in instance else instance["pass_to_pass"],
             arch=arch,
         )
 
     @property
     def eval_script(self):
-        return (
-            "\n".join(["#!/bin/bash", "set -uxo pipefail"] + self.eval_script_list)
-            + "\n"
-        )
+        return "\n".join(["#!/bin/bash", "set -uxo pipefail"] + self.eval_script_list) + "\n"
 
     @property
     def install_repo_script(self):
-        return (
-            "\n".join(["#!/bin/bash", "set -euxo pipefail"] + self.repo_script_list)
-            + "\n"
-        )
+        return "\n".join(["#!/bin/bash", "set -euxo pipefail"] + self.repo_script_list) + "\n"
 
     @property
     def base_image_key(self):
@@ -228,13 +227,11 @@ class TestSpec:
         test_files = re.findall(diff_pat, test_patch)
         return test_files
 
-    def test_script(self, test_files: Optional[list[str]] = None) -> list[str]:
+    def test_script(self, test_files: Optional[list[str]] = None) -> str:
         if not test_files:
             test_files = self.get_test_patch_files()
 
-        directives = [
-            d for d in test_files if not any(d.endswith(ext) for ext in NON_TEST_EXTS)
-        ]
+        directives = [d for d in test_files if not any(d.endswith(ext) for ext in NON_TEST_EXTS)]
 
         if self.repo == "django/django":
             directives_transformed = []
@@ -251,7 +248,7 @@ class TestSpec:
                 *directives,
             ]
         )
-        return [f"echo '{RUN_TESTS}'", test_command]
+        return test_command
 
     @property
     def eval_script_list(self) -> list[str]:
@@ -262,11 +259,12 @@ class TestSpec:
         directives = self.get_test_patch_files()
         test_script = self.test_script(directives)
 
-        eval_commands = (
-            [reset_tests_command, apply_test_patch_command]
-            + test_script
-            + [reset_tests_command]
-        )
+        eval_commands = [
+            reset_tests_command,
+            apply_test_patch_command,
+            test_script,
+            reset_tests_command,
+        ]
 
         return eval_commands
 
@@ -285,6 +283,7 @@ class TestSpec:
         """
 
         test_result = parse_log(content, self.repo)
+        logger.info(f"Test result: {test_result}")
         eval_ref = {
             KEY_INSTANCE_ID: self.instance_id,
             FAIL_TO_PASS: self.fail_to_pass,

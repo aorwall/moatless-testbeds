@@ -24,11 +24,6 @@ COPY testbeds /app/testbeds/
 COPY testbeds/api/main.py /app/
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
-# Setup logging
-RUN mkdir -p /var/log && \
-    touch /var/log/testbed-api.log && \
-    chmod 666 /var/log/testbed-api.log
-
 # Make entrypoint executable
 RUN chmod +x /app/entrypoint.sh
 

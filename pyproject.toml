@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "moatless-testbeds"
-version = "0.0.15"
+version = "0.0.17"
 description = "Run testbeds as isolated pods in a Kubernetes cluster"
 authors = ["Albert Örwall <albert@moatless.ai>"]
 repository = "https://github.com/aorwall/moatless-testbeds"

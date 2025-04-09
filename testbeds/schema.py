@@ -32,22 +32,22 @@ class SWEbenchInstance(BaseModel):
     environment_setup_commit: str = Field(
         ..., description="Commit hash for environment setup"
     )
-    dataset: Optional[str] = Field(
-        None, description="Dataset name"
-    )
+    dataset: Optional[str] = Field(None, description="Dataset name")
 
-    @model_validator(mode='before')
+    @model_validator(mode="before")
     @classmethod
     def validate_and_transform(cls, data: Any) -> Dict[str, Any]:
         """Pre-process and validate instance data."""
         if not isinstance(data, dict):
             return data
-        
-        if 'version' not in data:
-            raise ValueError(f"Version is required, but not found in the instance data with keys: {data.keys()}")
+
+        if "version" not in data:
+            raise ValueError(
+                f"Version is required, but not found in the instance data with keys: {data.keys()}"
+            )
 
         # Handle string list fields
-        for field in ['fail_to_pass', 'pass_to_pass']:
+        for field in ["fail_to_pass", "pass_to_pass"]:
             if isinstance(data.get(field), str):
                 try:
                     data[field] = json.loads(data[field])
@@ -60,12 +60,11 @@ class SWEbenchInstance(BaseModel):
                         logger.error(f"Failed to parse {field} with eval: {e}")
 
         # Set default values for required fields
-        if 'created_at' not in data:
-            data['created_at'] = datetime.now(timezone.utc).isoformat()
-        
-        if 'environment_setup_commit' not in data:
-            data['environment_setup_commit'] = data.get('base_commit', '')
+        if "created_at" not in data:
+            data["created_at"] = datetime.now(timezone.utc).isoformat()
 
+        if "environment_setup_commit" not in data:
+            data["environment_setup_commit"] = data.get("base_commit", "")
 
         return data
 
@@ -151,7 +150,7 @@ class TestRunResponse(BaseModel):
         failed = sum(1 for t in self.test_results if t.status == TestStatus.FAILED)
         skipped = sum(1 for t in self.test_results if t.status == TestStatus.SKIPPED)
         errors = sum(1 for t in self.test_results if t.status == TestStatus.ERROR)
-        
+
         return f"Test Results: {passed} passed, {failed} failed, {skipped} skipped, {errors} errors"
 
 
@@ -173,7 +172,9 @@ class TestsStatus(BaseModel):
 
 
 class EvaluationResult(BaseModel):
-    run_id: Optional[str] = Field(None, description="Unique identifier for the evaluation run")
+    run_id: Optional[str] = Field(
+        None, description="Unique identifier for the evaluation run"
+    )
     instance_id: str = Field(..., description="ID of the SWE-bench instance")
     patch_applied: bool = Field(
         default=False, description="Whether the patch was successfully applied"
@@ -211,6 +212,10 @@ class ContainerStatus(BaseModel):
     reason: Optional[str] = Field(None, description="Reason for the current state")
     message: Optional[str] = Field(
         None, description="Additional message about the container state"
+    )
+    restart_reasons: Optional[str] = Field(
+        None,
+        description="Information about reasons for container restarts if restart_count > 0",
     )
 
 

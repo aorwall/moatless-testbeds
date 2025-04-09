@@ -55,9 +55,7 @@ class TestbedSDK:
         response = self._make_request("GET", "testbeds")
         return [TestbedSummary(**item) for item in response.json()]
 
-    def get_or_create_testbed(
-        self, instance_id: str, run_id: str = "default"
-    ) -> TestbedSummary:
+    def get_or_create_testbed(self, instance_id: str, run_id: str = "default") -> TestbedSummary:
         if not instance_id:
             raise TestbedValidationError("instance_id is required")
 
@@ -101,27 +99,27 @@ class TestbedSDK:
         dataset_name: str | None = None,
         log_dir: str = None,
         run_id: str = "default",
+        testbed_id: str | None = None,
     ) -> AsyncTestbedClient:
         """Create an async testbed client."""
         with tracer.start_as_current_span("create_async_client") as span:
             span.set_attribute("instance_id", instance_id)
             span.set_attribute("run_id", run_id)
-
+            span.set_attribute("testbed_id", testbed_id)
             logger.info(
-                f"Creating async testbed client for instance {instance_id} with run_id {run_id}"
+                f"Creating async testbed client for {'testbed ' + testbed_id if testbed_id else 'instance ' + str(instance_id)} with run_id {run_id}"
             )
 
-            if not instance_id and not instance:
+            if not instance_id and not instance and not testbed_id:
                 span.set_attribute("error", True)
-                span.set_attribute("error.type", "validation_error")
-                raise ValueError("Either instance_id or instance must be provided")
+                raise TestbedValidationError("At least one of instance_id, instance, or testbed_id is required")
 
             if instance and isinstance(instance, dict):
                 instance = SWEbenchInstance.model_validate(instance)
             elif instance_id:
                 instance = await self._load_instance(instance_id)
-            else:
-                raise ValueError("Either instance_id or instance must be provided")
+            elif not testbed_id:
+                raise ValueError("Either instance_id, instance, or testbed_id must be provided")
 
             client = AsyncTestbedClient(
                 instance=instance,
@@ -131,17 +129,15 @@ class TestbedSDK:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 test_cache=self._test_cache if self.enable_cache else None,
+                testbed_id=testbed_id,
+                persist_testbed=testbed_id is not None,
             )
 
             return client
 
-    def get_testbed(
-        self, testbed_id: str, run_id: str = "default"
-    ) -> Optional[TestbedDetailed]:
+    def get_testbed(self, testbed_id: str, run_id: str = "default") -> Optional[TestbedDetailed]:
         try:
-            response = self._make_request(
-                "GET", f"testbeds/{testbed_id}", params={"run_id": run_id}
-            )
+            response = self._make_request("GET", f"testbeds/{testbed_id}", params={"run_id": run_id})
             return TestbedDetailed(**response.json())
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
@@ -149,9 +145,7 @@ class TestbedSDK:
             raise
 
     def delete_testbed(self, testbed_id: str, run_id: str = "default"):
-        self._make_request(
-            "DELETE", f"testbeds/{testbed_id}", params={"run_id": run_id}
-        )
+        self._make_request("DELETE", f"testbeds/{testbed_id}", params={"run_id": run_id})
 
     def delete_all_testbeds(self):
         self._make_request("DELETE", "testbeds")
@@ -172,19 +166,13 @@ class TestbedSDK:
             try:
                 with instance_path.open("r", encoding="utf-8") as f:
                     instance_data = json.load(f)
-                    INSTANCE_CACHE[instance_id] = SWEbenchInstance.model_validate(
-                        instance_data
-                    )
+                    INSTANCE_CACHE[instance_id] = SWEbenchInstance.model_validate(instance_data)
                     return INSTANCE_CACHE[instance_id]
             except Exception as e:
-                logger.warning(
-                    f"Failed to load instance from file {instance_path}: {e}"
-                )
+                logger.warning(f"Failed to load instance from file {instance_path}: {e}")
 
         # If file doesn't exist or loading failed, try API
-        logger.info(
-            f"Instance {instance_id} not found in local file, trying to load from API"
-        )
+        logger.info(f"Instance {instance_id} not found in local file, trying to load from API")
         try:
             response = await self._make_async_request("GET", f"instances/{instance_id}")
             INSTANCE_CACHE[instance_id] = SWEbenchInstance.model_validate(response)
@@ -201,9 +189,7 @@ class TestbedSDK:
             return response
 
         except requests.exceptions.ConnectionError as e:
-            raise TestbedConnectionError(
-                f"Failed to connect to testbed: {str(e)}"
-            ) from e
+            raise TestbedConnectionError(f"Failed to connect to testbed: {str(e)}") from e
         except requests.exceptions.Timeout as e:
             raise TestbedTimeoutError(f"Request timed out: {str(e)}") from e
         except requests.exceptions.HTTPError as e:
@@ -220,9 +206,7 @@ class TestbedSDK:
 
             if 400 <= e.response.status_code < 500:
                 if e.response.status_code == 401:
-                    raise TestbedAuthenticationError(
-                        error_message, error_code, details
-                    ) from e
+                    raise TestbedAuthenticationError(error_message, error_code, details) from e
             raise TestbedError(error_message, error_code, details) from e
 
         except Exception as e:
@@ -244,29 +228,19 @@ class TestbedSDK:
 
         while retries < max_retries:
             try:
-                timeout = aiohttp.ClientTimeout(
-                    total=30
-                )  # Match the sync version's timeout
-                logger.debug(
-                    f"Attempt {retries + 1}/{max_retries} with timeout {timeout.total}s"
-                )
+                timeout = aiohttp.ClientTimeout(total=30)  # Match the sync version's timeout
+                logger.debug(f"Attempt {retries + 1}/{max_retries} with timeout {timeout.total}s")
                 start_time = time.time()
 
                 logger.debug(f"Creating client session at {datetime.now().isoformat()}")
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    logger.debug(
-                        f"Session created after {time.time() - start_time:.2f}s"
-                    )
+                    logger.debug(f"Session created after {time.time() - start_time:.2f}s")
                     logger.debug(f"Initiating {method} request to {url}")
 
-                    async with session.request(
-                        method, url, headers=self.headers, **kwargs
-                    ) as response:
+                    async with session.request(method, url, headers=self.headers, **kwargs) as response:
                         conn_time = time.time() - start_time
                         logger.debug(f"Connection established after {conn_time:.2f}s")
-                        logger.debug(
-                            f"Response status: {response.status}, headers: {response.headers}"
-                        )
+                        logger.debug(f"Response status: {response.status}, headers: {response.headers}")
 
                         response.raise_for_status()
                         json_start = time.time()
@@ -284,20 +258,14 @@ class TestbedSDK:
                 logger.info(f"Connection error details: {type(e).__name__}, {str(e)}")
                 retries += 1
                 if retries == max_retries:
-                    raise TestbedConnectionError(
-                        f"Failed to connect to testbed: {str(e)}"
-                    ) from e
+                    raise TestbedConnectionError(f"Failed to connect to testbed: {str(e)}") from e
                 logger.info(f"Retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)
             except asyncio.TimeoutError as e:
                 elapsed = time.time() - start_time
-                logger.warning(
-                    f"Timeout error on attempt {retries + 1} after {elapsed:.2f}s"
-                )
-                logger.info(
-                    f"Timeout details: Limit was {timeout.total}s, actual time was {elapsed:.2f}s"
-                )
+                logger.warning(f"Timeout error on attempt {retries + 1} after {elapsed:.2f}s")
+                logger.info(f"Timeout details: Limit was {timeout.total}s, actual time was {elapsed:.2f}s")
                 retries += 1
                 if retries == max_retries:
                     raise TestbedTimeoutError(f"Request timed out: {str(e)}") from e
@@ -306,9 +274,7 @@ class TestbedSDK:
                 retry_delay = min(retry_delay * 2, max_retry_delay)
             except aiohttp.ClientResponseError as e:
                 logger.warning(f"Response error on attempt {retries + 1}: {str(e)}")
-                logger.info(
-                    f"Response error details - Status: {getattr(e, 'status', 'unknown')}, Message: {str(e)}"
-                )
+                logger.info(f"Response error details - Status: {getattr(e, 'status', 'unknown')}, Message: {str(e)}")
                 error_code = None
                 details = {}
 
@@ -322,9 +288,7 @@ class TestbedSDK:
 
                 if 400 <= e.status < 500:
                     if e.status == 401:
-                        raise TestbedAuthenticationError(
-                            error_message, error_code, details
-                        ) from e
+                        raise TestbedAuthenticationError(error_message, error_code, details) from e
                     raise TestbedError(error_message, error_code, details) from e
 
                 retries += 1
@@ -342,9 +306,7 @@ class TestbedSDK:
 
         raise TestbedError(f"Max retries reached for {url}")
 
-    async def get_or_create_testbed_async(
-        self, instance_id: str, run_id: str = "default"
-    ) -> TestbedSummary:
+    async def get_or_create_testbed_async(self, instance_id: str, run_id: str = "default") -> TestbedSummary:
         if not instance_id:
             raise TestbedValidationError("instance_id is required")
 

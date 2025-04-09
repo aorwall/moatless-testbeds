@@ -10,17 +10,18 @@ from dotenv import load_dotenv
 from testbeds.sdk import TestbedSDK
 
 logging.basicConfig(
-    level=logging.INFO, 
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
+load_dotenv()
 
-def run_evaluation(instance_id: str):    
+
+def run_evaluation(instance_id: str):
     if not os.getenv("TESTBED_HOSTNAME"):
         logger.error("TESTBED_HOSTNAME is not set")
         return False
-    
+
     if not os.getenv("TESTBED_API_KEY"):
         logger.error("TESTBED_API_KEY is not set")
         return False
@@ -31,10 +32,7 @@ def run_evaluation(instance_id: str):
     logger.info(f"Starting evaluation for instance: {instance_id}")
 
     try:
-        sdk = TestbedSDK(
-            base_url=hostname,
-            api_key=api_key
-        )
+        sdk = TestbedSDK(base_url=hostname, api_key=api_key)
 
         logger.info("Creating testbed instance...")
         with sdk.create_client(instance_id=instance_id) as testbed:
@@ -46,7 +44,15 @@ def run_evaluation(instance_id: str):
             if result.resolved:
                 logger.info("✅ Evaluation completed successfully!")
             else:
-                logger.info(f"Evaluation output:\n{result.model_dump_json(indent=2)}")
+                # logger.info(f"Evaluation output:\n{result.model_dump_json(indent=2)}")
+                logger.error("❌ Evaluation failed")
+
+            result = testbed.run_evaluation()
+
+            if result.resolved:
+                logger.info("✅ Evaluation completed successfully!")
+            else:
+                # logger.info(f"Evaluation output:\n{result.model_dump_json(indent=2)}")
                 logger.error("❌ Evaluation failed")
 
             return result.resolved
@@ -57,10 +63,13 @@ def run_evaluation(instance_id: str):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run evaluation on Testbed API')
-    parser.add_argument('--instance-id', type=str,
-                        help='Instance ID to use for evaluation (e.g., django__django-11133)')
-    
+    parser = argparse.ArgumentParser(description="Run evaluation on Testbed API")
+    parser.add_argument(
+        "--instance-id",
+        type=str,
+        help="Instance ID to use for evaluation (e.g., django__django-11133)",
+    )
+
     args = parser.parse_args()
     success = run_evaluation(args.instance_id)
-    sys.exit(0 if success else 1) 
+    sys.exit(0 if success else 1)
